@@ -1,6 +1,5 @@
 build
-build-san
-build-bench
+build-*
 output
 *.pt
 *.pth

@@ -1,2 +1,0 @@
-/usr/bin/ar qc libda3_inference_lib.a CMakeFiles/da3_inference_lib.dir/src/depth_anything3_inference.cpp.o CMakeFiles/da3_inference_lib.dir/src/processing_utils.cpp.o CMakeFiles/da3_inference_lib.dir/src/backends/inference_backend.cpp.o CMakeFiles/da3_inference_lib.dir/src/backends/onnx_runtime_backend.cpp.o
-/usr/bin/ranlib libda3_inference_lib.a

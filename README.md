@@ -1,1 +1,347 @@
-# depth-anything-3-cpp-inference
+# Depth Anything 3 C++ Inference
+
+[![C++](https://img.shields.io/badge/language-C++20-blue.svg)](https://en.cppreference.com/w/cpp)
+[![CMake](https://img.shields.io/badge/build%20system-CMake-blue.svg)](https://cmake.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
+C++ inference engine for **[Depth Anything 3](https://github.com/ByteDance-Seed/Depth-Anything-3)** monocular depth estimation, with **multiple inference backends** (ONNX Runtime and TensorRT) and OpenCV for image I/O and visualization.
+
+The C++ design is inspired by:
+- [olibartfast/rf-detr-cpp-inference](https://github.com/olibartfast/rf-detr-cpp-inference)
+- [olibartfast/foundation-pose-cpp-inference](https://github.com/olibartfast/foundation-pose-cpp-inference)
+
+---
+
+## Table of Contents
+- [Features](#features)
+- [Dependencies](#dependencies)
+- [Model Setup](#model-setup)
+- [Installation](#installation)
+- [Building](#building)
+- [Usage](#usage)
+- [Configuration](#configuration)
+- [Technical Details](#technical-details)
+- [Testing](#testing)
+- [Docker](#docker)
+- [Code Quality Tools](#code-quality-tools)
+- [Acknowledgements](#acknowledgements)
+
+---
+
+## Features
+
+- **Monocular depth estimation** from a single RGB image
+- **Multiple inference backends** selectable at compile time:
+  - ONNX Runtime (CPU/GPU, cross-platform, auto-downloaded)
+  - TensorRT (NVIDIA GPU, auto-downloaded)
+- **ImageNet normalization** matching the Python reference implementation
+- **Aspect-ratio-preserving resize** with DINOv2 patch-size divisibility (multiples of 14)
+- **Depth colormap visualization** using OpenCV's INFERNO colormap
+- **Optional confidence map** output
+- **Unit tests** using Google Test (no model required)
+- **Google Benchmark** support for preprocessing benchmarks
+
+---
+
+## Dependencies
+
+### Required (All Backends)
+- **C++20 Compiler**: Clang 15+ or GCC 12+
+- **CMake**: Version 3.12 or higher
+- **OpenCV**: Version 4.x (`core`, `imgproc`, `imgcodecs`, `highgui`)
+- **Google Test**: Version 1.12.1 (automatically fetched during build)
+- **Ninja**: Optional but recommended (`sudo apt-get install ninja-build`)
+
+### Backend-Specific Dependencies
+
+#### ONNX Runtime Backend (Default)
+- **ONNX Runtime**: Version 1.21.0 (automatically downloaded during CMake configure)
+- **Platform**: Linux, Windows, macOS
+- **Acceleration**: CPU and GPU
+
+#### TensorRT Backend (Optional)
+- **TensorRT**: Version 10.x (automatically downloaded during CMake configure)
+- **CUDA Toolkit**: Must be installed manually
+- **Platform**: Linux with NVIDIA GPU
+
+---
+
+## Model Setup
+
+1. **Install the Depth Anything 3 Python package** in a virtual environment:
+   ```bash
+   pip install xformers "torch>=2" torchvision
+   pip install -e /path/to/Depth-Anything-3
+   ```
+
+2. **Export the model to ONNX** using the provided script:
+   ```bash
+   # Export DA3-Large (recommended for a good speed/quality trade-off)
+   python export_onnx.py \
+       --model-name da3-large \
+       --output model.onnx \
+       --process-res 504
+
+   # Export DA3Mono-Large (monocular-only variant, slightly faster)
+   python export_onnx.py \
+       --model-name da3mono-large \
+       --output model_mono.onnx
+
+   # Export from a local directory
+   python export_onnx.py \
+       --model-dir /path/to/local/model \
+       --output model.onnx
+   ```
+   The script exports the model with **dynamic spatial axes** by default so it
+   accepts images of any resolution (as long as H and W are divisible by 14).
+
+3. **Supported model variants** for monocular depth:
+   | Model | Params | Notes |
+   |-------|--------|-------|
+   | `DA3-Small` | ~90M | Fastest |
+   | `DA3-Base` | ~190M | Balanced |
+   | `DA3-Large` | 350M | Good quality |
+   | `DA3-Giant` | 1.15B | Best quality |
+   | `DA3Mono-Large` | 350M | Monocular-optimized |
+   | `DA3Metric-Large` | 350M | Metric depth (real-world scale) |
+
+---
+
+## Installation
+
+### Install Dependencies (Ubuntu)
+
+```bash
+sudo apt-get update
+sudo apt-get install -y cmake libopencv-dev
+
+# Compiler — any C++20-capable version:
+sudo apt-get install -y clang-18
+# or: gcc (default on Ubuntu 22.04+ is GCC 11+)
+
+# Optional (faster builds):
+sudo apt-get install -y ninja-build
+
+# Optional (linting):
+sudo apt-get install -y clang-format-18 clang-tidy-18
+```
+
+---
+
+## Building
+
+### Backend Selection
+
+| Backend | Best For | Pros | Cons |
+|---------|----------|------|------|
+| **ONNX Runtime** | Development, CPU inference | Cross-platform, easy setup | Slower than TensorRT on GPU |
+| **TensorRT** | Production on NVIDIA GPUs | Maximum performance | GPU-only, requires CUDA/TensorRT |
+
+**Important**: Only ONE backend can be enabled at a time.
+
+### Build with ONNX Runtime (Default)
+
+```bash
+cmake -S . -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release
+
+cmake --build build --parallel
+```
+
+With explicit compiler:
+```bash
+cmake -S . -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=/usr/bin/clang-18 \
+  -DCMAKE_CXX_COMPILER=/usr/bin/clang++-18
+
+cmake --build build --parallel
+```
+
+### Build with TensorRT Backend
+
+```bash
+cmake -S . -B build -G Ninja \
+  -DUSE_ONNX_RUNTIME=OFF \
+  -DUSE_TENSORRT=ON \
+  -DCMAKE_BUILD_TYPE=Release
+
+cmake --build build --parallel
+```
+
+### Build Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `-DUSE_ONNX_RUNTIME=ON/OFF` | ON | Enable ONNX Runtime backend |
+| `-DUSE_TENSORRT=ON/OFF` | OFF | Enable TensorRT backend |
+| `-DCMAKE_BUILD_TYPE=Release/Debug` | — | Build configuration |
+| `-DSANITIZERS=ON/OFF` | OFF | Enable AddressSanitizer + UBSan |
+| `-DWERROR=ON/OFF` | OFF | Treat warnings as errors |
+| `-DBENCHMARKS=ON/OFF` | OFF | Build Google Benchmark targets |
+
+---
+
+## Usage
+
+### Single Image Inference
+
+```bash
+./build/inference_app /path/to/model.onnx /path/to/image.jpg
+```
+
+The output depth colormap is saved as **`output_depth.jpg`** in the current directory.
+
+### With Confidence Map
+
+```bash
+./build/inference_app /path/to/model.onnx /path/to/image.jpg --conf
+```
+
+Saves `output_depth.jpg` and `output_conf.jpg`.
+
+### Custom Processing Resolution
+
+```bash
+./build/inference_app /path/to/model.onnx /path/to/image.jpg --process-res 756
+```
+
+### Keep Depth at Model Resolution (no upscale)
+
+```bash
+./build/inference_app /path/to/model.onnx /path/to/image.jpg --no-upscale
+```
+
+### Full Usage
+
+```
+Usage: ./build/inference_app <path_to_model> <path_to_image> [--conf] [--no-upscale] [--process-res N]
+
+Arguments:
+  path_to_model   ONNX model (.onnx) or TensorRT engine (.engine / .trt)
+  path_to_image   Input image (JPG, PNG, ...)
+
+Options:
+  --conf          Also save the confidence map as output_conf.jpg
+  --no-upscale    Keep depth map at model output resolution (no resize to original)
+  --process-res N Resize the longest side to N before inference (default: 504)
+```
+
+---
+
+## Configuration
+
+The `Config` struct controls inference behaviour:
+
+```cpp
+Config config;
+config.process_res = 504;     // Longest-side target resolution
+config.patch_size  = 14;      // DINOv2 patch divisibility requirement
+config.output_conf = false;   // Also extract confidence map
+// ImageNet normalization (same as Python reference):
+config.means = {0.485f, 0.456f, 0.406f};
+config.stds  = {0.229f, 0.224f, 0.225f};
+```
+
+---
+
+## Technical Details
+
+### Preprocessing Pipeline
+
+1. Load BGR image via OpenCV
+2. Compute output spatial size:
+   - Scale longest side to `process_res`
+   - Round each dimension to nearest multiple of `patch_size` (14)
+3. Resize to `(out_h, out_w)` with bilinear interpolation
+4. Convert BGR → RGB
+5. Scale to [0, 1] (divide by 255)
+6. Arrange in CHW layout
+7. Apply ImageNet normalization: `(x − mean) / std`
+
+### Model Input / Output
+
+| Tensor | Shape | Description |
+|--------|-------|-------------|
+| `image` (input) | `[1, 3, H, W]` | Preprocessed CHW float image |
+| `depth` (output 0) | `[1, H, W]` | Depth map (relative or metric) |
+| `conf` (output 1) | `[1, H, W]` | Confidence map (optional) |
+
+> **Note**: The spatial dimensions `H` and `W` must be divisible by 14.
+> With dynamic-axes export (default), the model accepts any compliant resolution.
+
+### Postprocessing
+
+The depth tensor is:
+1. Reshaped from `[1, H, W]` to a `cv::Mat` of type `CV_32F`
+2. Optionally upscaled back to the original image resolution with bilinear interpolation
+3. Colorized using OpenCV's `COLORMAP_INFERNO` for visualization
+
+---
+
+## Testing
+
+### Unit Tests
+
+Unit tests use Google Test and run entirely without a model file:
+
+```bash
+cmake -S . -B build
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure -R UnitTests
+```
+
+Tests cover:
+- `normalize_image` — channel-wise normalization
+- `compute_output_size` — aspect-ratio-preserving resize with patch alignment
+- `round_to_multiple` — patch divisibility rounding
+- `preprocess_frame` — full CHW tensor pipeline
+- `apply_depth_colormap` — visualization
+- `DepthAnything3Inference` — constructor, preprocess, run+postprocess with mock backend
+
+### Benchmarks
+
+```bash
+cmake -S . -B build -DBENCHMARKS=ON
+cmake --build build --target benchmarks --parallel
+./build/benchmarks
+```
+
+### Sanitizers
+
+```bash
+cmake -S . -B build-san -DCMAKE_BUILD_TYPE=Debug -DSANITIZERS=ON
+cmake --build build-san --parallel
+ctest --test-dir build-san --output-on-failure
+```
+
+---
+
+## Docker
+
+### ONNX Runtime (CPU)
+
+```bash
+docker build -t da3-onnx .
+docker run -v $(pwd)/data:/data da3-onnx /data/model.onnx /data/image.jpg
+```
+
+---
+
+## Code Quality Tools
+
+| Tool | Purpose | How to run |
+|------|---------|------------|
+| `clang-format-18` | Code formatting | `find src tests -name '*.cpp' -o -name '*.hpp' \| xargs clang-format-18 -i` |
+| `clang-tidy-18` | Static analysis | `find src -name '*.cpp' \| xargs clang-tidy-18 -p build` |
+| `cppcheck` | Flow-based static analysis | `cppcheck --enable=all --std=c++20 -I src src/` |
+| AddressSanitizer + UBSan | Runtime memory/UB detection | `-DSANITIZERS=ON` at configure time |
+
+---
+
+## Acknowledgements
+
+- **Depth Anything 3** model: [ByteDance-Seed/Depth-Anything-3](https://github.com/ByteDance-Seed/Depth-Anything-3)
+- C++ design inspired by:
+  - [olibartfast/rf-detr-cpp-inference](https://github.com/olibartfast/rf-detr-cpp-inference)
+  - [olibartfast/foundation-pose-cpp-inference](https://github.com/olibartfast/foundation-pose-cpp-inference)

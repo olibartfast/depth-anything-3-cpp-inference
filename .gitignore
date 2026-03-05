@@ -1,0 +1,10 @@
+build
+build-*
+output
+*.pt
+*.pth
+*.onnx
+*.engine
+*.trt
+__pycache__
+.venv

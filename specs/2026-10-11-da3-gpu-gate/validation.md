@@ -38,7 +38,11 @@ DEADLINE_HOURS=2 CUDA_ARCH=86 MODEL=~/da3-small.onnx IMAGE=~/test.jpg \
 | C-1 | Gate skeleton | pass | 2026-10-11 | `scripts/run_gpu_gate.sh` + `setup_colab.sh` bash -n + shellcheck clean; `gpu_gate.ipynb` JSON valid |
 
 ## Deviations
-- None yet.
+- Brev run 2026-10-11 CLOSED without pass (fail-fast pip chain, ~1h L4 $0.85/h wasted). Lessons, fix before next paid run:
+  - Box python3.10: old pip (no `--break-system-packages`), no `pip3` until `apt install python3-pip`.
+  - `pip install -e Depth-Anything-3` pulls `moviepy` → egg_info fails on py3.10/new setuptools. Fix: `--no-deps` + pre-install only export libs (torch, einops, huggingface_hub, numpy<2, opencv, pillow, omegaconf, safetensors).
+  - Editable+hatchling needs `hatchling`+`editables` (or isolated build). Fix: bake into setup script, test free first.
+- Strategy change (user): perfect setup script on free LAN GPU `192.168.0.212`, only then re-rent Brev.
 
 ## Definition of Done
 - [ ] Every row executed with evidence; deviations documented; roadmap/changelog updated.

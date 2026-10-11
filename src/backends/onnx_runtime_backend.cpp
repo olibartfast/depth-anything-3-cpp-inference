@@ -25,23 +25,31 @@ std::vector<int64_t> OnnxRuntimeBackend::initialize(const std::filesystem::path 
 
     session_ = std::make_unique<Ort::Session>(*env_, model_path.c_str(), session_options);
 
-    // Auto-detect input shape from model if spatial dimensions are 0
+    // Auto-detect input shape from model if spatial dimensions are 0.
+    // Static models report concrete H/W; dynamic-axes exports (see
+    // export_onnx.py) report symbolic dims (-1) — accept those and keep the
+    // {1,3,0,0} placeholder; run_inference() supplies the real per-call shape.
     std::vector<int64_t> detected_shape = input_shape;
     if (input_shape.size() >= 4 && (input_shape[2] == 0 || input_shape[3] == 0)) {
         Ort::TypeInfo input_type_info = session_->GetInputTypeInfo(0);
         auto tensor_info = input_type_info.GetTensorTypeAndShapeInfo();
         auto shape = tensor_info.GetShape();
 
-        if (shape.size() >= 3 && shape.back() > 0 && shape[shape.size() - 2] > 0) {
-            detected_shape = shape;
-            std::cout << "[ONNX Runtime] Auto-detected input shape: [";
-            for (size_t i = 0; i < shape.size(); ++i) {
-                std::cout << shape[i];
-                if (i + 1 < shape.size()) {
-                    std::cout << ", ";
+        if (shape.size() == 4 && shape[1] == 3) {
+            if (shape[2] > 0 && shape[3] > 0) {
+                detected_shape = shape;
+                std::cout << "[ONNX Runtime] Auto-detected static input shape: [";
+                for (size_t i = 0; i < shape.size(); ++i) {
+                    std::cout << shape[i];
+                    if (i + 1 < shape.size()) {
+                        std::cout << ", ";
+                    }
                 }
+                std::cout << "]" << std::endl;
+            } else {
+                std::cout << "[ONNX Runtime] Model has dynamic spatial dims; using per-call shapes."
+                          << std::endl;
             }
-            std::cout << "]" << std::endl;
         } else {
             throw std::runtime_error("Could not auto-detect valid input shape from model.");
         }

@@ -1,0 +1,5 @@
+PASS V-1 ort-cpu-build+UnitTests (27/27)
+PASS V-2 ort-cpu infer depth+conf (square-504 only; see fixed-shape note)
+PASS V-5 parity eager-vs-onnx max-abs 5.662e-06 mean-abs 4.057e-07 (gate mean<=1e-3)
+UNRUN V-3/V-4 TRT build+infer (no CUDA toolkit/nvcc locally)
+UNRUN Brev full gate (not needed for this smoke; local 3060 sufficed for ORT)

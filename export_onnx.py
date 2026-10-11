@@ -88,6 +88,29 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _patch_cartesian_prod_for_onnx() -> None:
+    """Replace torch.cartesian_prod (2-arg) with an ONNX-traceable equivalent.
+
+    Upstream RoPE (model/dinov2/layers/rope.py: PositionGetter) builds its
+    patch grid via torch.cartesian_prod, which the TorchScript ONNX exporter
+    cannot lower (UnsupportedOperatorError). The replacement uses only
+    unsqueeze/expand/reshape/stack and is numerically identical:
+    cartesian_prod(y, x)[k] == (y[i], x[j]) with i outer, j inner.
+    Applied to torch globally but only affects this export process.
+    """
+    real_cartesian_prod = torch.cartesian_prod
+
+    def _traceable_cartesian_prod(*tensors):
+        if len(tensors) == 2:
+            y, x = tensors
+            yy = y.unsqueeze(1).expand(y.shape[0], x.shape[0]).reshape(-1)
+            xx = x.unsqueeze(0).expand(y.shape[0], x.shape[0]).reshape(-1)
+            return torch.stack([yy, xx], dim=1)
+        return real_cartesian_prod(*tensors)
+
+    torch.cartesian_prod = _traceable_cartesian_prod
+
+
 class MonocularWrapper(torch.nn.Module):
     """
     Thin wrapper around DepthAnything3 that:
@@ -104,7 +127,9 @@ class MonocularWrapper(torch.nn.Module):
     def forward(self, image: torch.Tensor):
         # image: (1, 3, H, W)  →  add the N-views dimension → (1, 1, 3, H, W)
         imgs = image.unsqueeze(1).float()  # (1, 1, 3, H, W)
-        output = self.model.model(imgs, None, None, None, False, False, "saddle_balanced")
+        # NOTE: 4th positional is export_feat_layers — must be [] (not None);
+        # upstream defaults to [] and `i in None` raises TypeError even eagerly.
+        output = self.model.model(imgs, None, None, [], False, False, "saddle_balanced")
 
         # depth: (B, N, 1, H, W) → squeeze batch+views+channel → (H, W) → add batch dim
         depth = output["depth"].squeeze(0).squeeze(0).squeeze(0)  # (H, W)
@@ -142,6 +167,8 @@ def main() -> int:
 
     model = model.to(device=device)
     model.eval()
+
+    _patch_cartesian_prod_for_onnx()
 
     wrapper = MonocularWrapper(model)
     wrapper.eval()
@@ -193,6 +220,7 @@ def main() -> int:
             output_names=output_names,
             dynamic_axes=dynamic_axes,
             do_constant_folding=True,
+            dynamo=False,  # legacy tracer: dynamo export fails on DA3 (SymInt/control-flow)
         )
 
     print(f"Model exported to: {output_path}")

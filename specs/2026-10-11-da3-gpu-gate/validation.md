@@ -31,11 +31,12 @@ DEADLINE_HOURS=2 CUDA_ARCH=86 MODEL=~/da3-small.onnx IMAGE=~/test.jpg \
 | ID | Command/Check | Result | Date | Notes |
 |----|---------------|--------|------|-------|
 | V-1 | Local ORT-CPU build+UnitTests | pass | 2026-10-11 | user run: `scripts/run_gpu_gate.sh` → PASS V-1, V-2/V-5 UNRUN (no MODEL/IMAGE) |
-| V-2/V-5 | Local infer+parity | pending | — | needs MODEL+IMAGE; no torch locally → export on Colab per below |
+| V-2/V-5 | Local infer+parity | pass (square-504) | 2026-10-12 | RTX 3060: inference_app on /tmp/da3-small.onnx + /tmp/test504.png → depth [0.546271,1.50737] + conf; eager-vs-ONNX max-abs 5.662e-06 mean-abs 4.057e-07 (gate mean<=1e-3 PASS). Evidence: evidence/2026-10-12-local-3060/. Fixed-shape caveat below. |
 | V-10 | Colab T4 | pending | — | notebook skeleton T-2 first |
 | M-1/M-2 | manual | pending | — | — |
 | — | Local pre-check | pass | 2026-10-11 | `nvidia-smi` absent → confirms need for rented GPU; `brev search` works logged-out (A10G g5.xlarge $1.21/h, L4 g2-standard-4 $0.85/h) |
 | C-1 | Gate skeleton | pass | 2026-10-11 | `scripts/run_gpu_gate.sh` + `setup_colab.sh` bash -n + shellcheck clean; `gpu_gate.ipynb` JSON valid |
+| C-2 | Skeleton re-audit (orchestrated) | pass w/ note | 2026-10-12 | bash -n clean on run_gpu_gate.sh/gpu_host_setup.sh/setup_colab.sh, ipynb JSON valid; shellcheck NOT installed locally (UNRUN); local GPU now present (see deviations) |
 
 ## Deviations
 - Brev run 2026-10-11 CLOSED without pass (fail-fast pip chain, ~1h L4 $0.85/h wasted). Lessons, fix before next paid run:
@@ -43,6 +44,16 @@ DEADLINE_HOURS=2 CUDA_ARCH=86 MODEL=~/da3-small.onnx IMAGE=~/test.jpg \
   - `pip install -e Depth-Anything-3` pulls `moviepy` → egg_info fails on py3.10/new setuptools. Fix: `--no-deps` + pre-install only export libs (torch, einops, huggingface_hub, numpy<2, opencv, pillow, omegaconf, safetensors).
   - Editable+hatchling needs `hatchling`+`editables` (or isolated build). Fix: bake into setup script, test free first.
 - Strategy change (user): perfect setup script on free LAN GPU `192.168.0.212`, only then re-rent Brev.
+- 2026-10-12 local export findings (pip torch 2.12.0+cu130, no NGC needed):
+  - export_onnx.py fixes: wrapper 4th positional must be `[]` not None (upstream forward
+    signature now `(x, extrinsics, intrinsics, export_feat_layers=[], ...)`); `dynamo=False`
+    (dynamo export fails with SymInt error); cartesian_prod compat patch for RoPE grid.
+  - env shims (import-time only, never called in mono path): moviepy 2.x + editor.py shim,
+    /tmp/da3shim/pycolmap.py stub; pip installs: einops, omegaconf, moviepy, addict, plyfile, evo.
+  - FIXED-SHAPE LIMITATION: traced ONNX bakes RoPE tables for the 504x504 trace grid;
+    non-square input (280x504) fails in ORT (`Add` broadcast 721 vs 1297). Dynamic axes are
+    declared but not honored — multi-shape export needs dynamo + upstream cache/int() rework.
+    C++ ORT backend now accepts symbolic dims instead of throwing (per-call shapes).
 
 ## Definition of Done
 - [ ] Every row executed with evidence; deviations documented; roadmap/changelog updated.

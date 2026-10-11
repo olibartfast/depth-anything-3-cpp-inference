@@ -40,4 +40,11 @@ void preprocess_frame(const cv::Mat &bgr_frame, std::span<float> output, int out
 /// Values are expected in [0, 1]; applies COLORMAP_JET.
 [[nodiscard]] cv::Mat apply_conf_colormap(const cv::Mat &conf_map);
 
+/// Convert a relative depth map to metric depth.
+/// metric = focal_px * net_output / 300.f
+/// NOTE: Nested model output is already in meters — do not scale it.
+/// @param net_output Relative depth value from the network
+/// @param focal_px   Focal length in pixels
+[[nodiscard]] float metric_depth_from_relative(float net_output, float focal_px) noexcept;
+
 } // namespace da3::processing

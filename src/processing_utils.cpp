@@ -96,4 +96,10 @@ cv::Mat apply_conf_colormap(const cv::Mat &conf_map) {
     return colored;
 }
 
+float metric_depth_from_relative(float net_output, float focal_px) noexcept {
+    // metric (meters) = focal_px * relative / 300
+    // NOTE: Nested model output is already in meters — do not scale it.
+    return focal_px * net_output / 300.f;
+}
+
 } // namespace da3::processing

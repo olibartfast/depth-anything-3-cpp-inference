@@ -23,14 +23,17 @@ ctest --test-dir build --output-on-failure -R UnitTests
 ## Evidence Log
 | ID | Command/Check | Result | Date | Notes |
 |----|---------------|--------|------|-------|
-| V-1 | `ctest -R UnitTests` | pending | — | run after T-3 |
+| V-1 | `ctest -R UnitTests` | pass | 2026-10-12 | orchestrated run: 27/27 pass incl. new MetricScaling.{Formula,ZeroInput,LargeFocalSanity}; one repair cycle on Formula expectation (100/300) |
+| V-2 | full `ctest` regression | pass | 2026-10-12 | single UnitTests suite = full suite; exit 0 |
+| V-4 | clang-format on touched files | pass w/ note | 2026-10-12 | new helper lines clean; sole violation at processing_utils.cpp:82 is pre-existing |
 | M-1 | site walkthrough | pass | 2026-10-11 | fetched markdown via WebFetch, teaser + abilities verified |
 | M-2 | GitHub walkthrough | pass | 2026-10-11 | Model Zoo/API/FAQ verified via WebFetch |
 | M-3 | HF collections | pass | 2026-10-11 | DA3 (11) + camera-depth (7) verified via WebFetch |
-| M-4 | README sync | pending | — | after T-2 diff |
+| M-4 | README sync | pass | 2026-10-12 | docs-only diff; links (project page, GitHub, arXiv:2511.10647, DA3 HF collection 11 items, camera-depth-models 7 items), license split Apache-2.0 vs CC BY-NC 4.0, metric formula `focal * net / 300.`, parity one-liner, any-view deferral note all added; all links resolved (no dead links) |
 
 ## Deviations
-- None yet; any unmet criterion must note why + tracking location here.
+- 2026-10-12 orchestration: local host now HAS a GPU (RTX 3060 Laptop 6GB, cc 8.6, driver 610.43, CUDA UMD 13.3) — contradicts 2026-10-11 "no GPU" assumption in GPU-gate spec. ORT-CUDA smoke still UNRUN (no MODEL/IMAGE weights locally); Brev/Colab gates remain maintainer-run. GPU-gate validation.md updated separately.
+- Reviewer non-blocking nits (accepted as follow-ups, not merge-blockers): README ToC order vs section placement; "11 items" phrasing; Nested row under monocular heading; demo-space/model-card hyperlinks named but not linked.
 
 ## Definition of Done (integration)
 - [ ] Every automated and manual check executed, with evidence recorded

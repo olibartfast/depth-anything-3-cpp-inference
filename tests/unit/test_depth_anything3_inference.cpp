@@ -280,6 +280,29 @@ TEST_F(InferenceTest, ColorizerDepth) {
 }
 
 // ============================================================================
+// metric_depth_from_relative tests
+// ============================================================================
+
+TEST(MetricScaling, Formula) {
+    // 500 * 1.5 / 300 = 2.5
+    EXPECT_NEAR(da3::processing::metric_depth_from_relative(1.5f, 500.0f), 2.5f, 1e-5f);
+    EXPECT_NEAR(da3::processing::metric_depth_from_relative(0.1f, 1000.0f), 100.0f / 300.0f, 1e-5f);
+    EXPECT_NEAR(da3::processing::metric_depth_from_relative(1.0f, 300.0f), 1.0f, 1e-5f);
+}
+
+TEST(MetricScaling, ZeroInput) {
+    EXPECT_NEAR(da3::processing::metric_depth_from_relative(0.0f, 500.0f), 0.0f, 1e-5f);
+    EXPECT_NEAR(da3::processing::metric_depth_from_relative(0.0f, 0.0f), 0.0f, 1e-5f);
+}
+
+TEST(MetricScaling, LargeFocalSanity) {
+    // Large focal length scales proportionally: focal=5000, net=1.2 -> 20
+    EXPECT_NEAR(da3::processing::metric_depth_from_relative(1.2f, 5000.0f), 20.0f, 1e-3f);
+    constexpr float kHugeFocal = 1e6f;
+    EXPECT_NEAR(da3::processing::metric_depth_from_relative(300.0f, kHugeFocal), kHugeFocal, kHugeFocal * 1e-5f);
+}
+
+// ============================================================================
 // MockBackend direct tests
 // ============================================================================
 

@@ -6,6 +6,14 @@
 
 C++ inference engine for **[Depth Anything 3](https://github.com/ByteDance-Seed/Depth-Anything-3)** monocular depth estimation, with **multiple inference backends** (ONNX Runtime and TensorRT) and OpenCV for image I/O and visualization.
 
+Other useful upstream links:
+
+- **Project page**: <https://depth-anything-3.github.io/> (abilities, demos, benchmark)
+- **Upstream repo**: [ByteDance-Seed/Depth-Anything-3](https://github.com/ByteDance-Seed/Depth-Anything-3)
+- **Citation**: Depth Anything 3, arXiv:2511.10647 (<https://arxiv.org/abs/2511.10647>)
+- **Hugging Face collection**: [depth-anything/depth-anything-3](https://huggingface.co/collections/depth-anything/depth-anything-3) — 11 items: `depth-anything-3-nested-giant-large-1.1`, `depth-anything-3-giant-1.1`, `depth-anything-3-large-1.1`, `depth-anything-3-base`, `depth-anything-3-small`, `depth-anything-3-metric-large`, `depth-anything-3-mono-large`, `depth-anything-3-nested-giant-large`, `depth-anything-3-giant`, `depth-anything-3-large`, plus the online demo space and the `DA3-BENCH` benchmark
+- **Camera depth models**: [depth-anything/camera-depth-models](https://huggingface.co/collections/depth-anything/camera-depth-models) — 7 items: `d405`, `d435`, `l515`, `kinect`, `zed2i-neural`, `zed2i-quality`, `base`
+
 The C++ design is inspired by:
 - [olibartfast/rf-detr-cpp-inference](https://github.com/olibartfast/rf-detr-cpp-inference)
 - [olibartfast/foundation-pose-cpp-inference](https://github.com/olibartfast/foundation-pose-cpp-inference)
@@ -16,6 +24,8 @@ The C++ design is inspired by:
 - [Features](#features)
 - [Dependencies](#dependencies)
 - [Model Setup](#model-setup)
+- [Parity With the Python Reference](#parity-with-the-python-reference)
+- [Scope: Multi-View Mode (Deferred)](#scope-multi-view-mode-deferred)
 - [Installation](#installation)
 - [Building](#building)
 - [Usage](#usage)
@@ -96,14 +106,33 @@ The C++ design is inspired by:
    accepts images of any resolution (as long as H and W are divisible by 14).
 
 3. **Supported model variants** for monocular depth:
-   | Model | Params | Notes |
-   |-------|--------|-------|
-   | `DA3-Small` | ~90M | Fastest |
-   | `DA3-Base` | ~190M | Balanced |
-   | `DA3-Large` | 350M | Good quality |
-   | `DA3-Giant` | 1.15B | Best quality |
-   | `DA3Mono-Large` | 350M | Monocular-optimized |
-   | `DA3Metric-Large` | 350M | Metric depth (real-world scale) |
+
+   | Model | Params | License | Notes |
+   |-------|--------|---------|-------|
+   | `DA3-Small` | ~90M | Apache-2.0 | Fastest |
+   | `DA3-Base` | ~190M | Apache-2.0 | Balanced |
+   | `DA3-Large` | 350M | CC BY-NC 4.0 | Good quality — prefer the retrained `-1.1` checkpoint (`da3-large-1.1`) |
+   | `DA3-Giant` | 1.15B | CC BY-NC 4.0 | Best quality — prefer the retrained `-1.1` checkpoint (`da3-giant-1.1`) |
+   | `DA3-Nested-Giant-Large` | ~1.25B | CC BY-NC 4.0 | Nested multi-view variant — prefer `da3-nested-giant-large-1.1`; already outputs metric depth (see metric note below) |
+   | `DA3Mono-Large` | 350M | Apache-2.0 | Monocular-optimized |
+   | `DA3Metric-Large` | 350M | Apache-2.0 | Metric depth (real-world scale) |
+
+   > **License note**: the Small/Base/Mono/Metric and camera-base checkpoints are **Apache-2.0**;
+   > the Large/Giant/Nested checkpoints are **CC BY-NC 4.0** (non-commercial). For Large, Giant and
+   > Nested, prefer the retrained `-1.1` checkpoints for better quality.
+
+4. **Camera-depth model variants** (trained per camera model, on
+   [depth-anything/camera-depth-models](https://huggingface.co/collections/depth-anything/camera-depth-models)):
+
+   | Model | Target device | Notes |
+   |-------|--------------|-------|
+   | `d405` | Intel RealSense D405 | Camera-specific depth |
+   | `d435` | Intel RealSense D435 | Camera-specific depth |
+   | `l515` | Intel RealSense L515 | Camera-specific depth |
+   | `kinect` | Microsoft Kinect | Camera-specific depth |
+   | `zed2i-neural` | Stereolabs ZED 2i | Neural (stacked) variant |
+   | `zed2i-quality` | Stereolabs ZED 2i | Quality (stacked) variant |
+   | `base` | Generic RGB camera | Camera-base model (Apache-2.0) |
 
 ---
 
@@ -276,6 +305,50 @@ The depth tensor is:
 1. Reshaped from `[1, H, W]` to a `cv::Mat` of type `CV_32F`
 2. Optionally upscaled back to the original image resolution with bilinear interpolation
 3. Colorized using OpenCV's `COLORMAP_INFERNO` for visualization
+
+### Metric Depth
+
+For the metric models (`DA3Metric-Large`, camera-depth variants), the real-world
+metric depth is obtained from the network output as:
+
+```
+metric_depth = focal * net_output / 300.
+```
+
+where `focal` is the focal length in pixels from the camera intrinsics. The
+nested multi-view variant (`DA3-Nested-Giant-Large`) already outputs meters and
+requires no conversion.
+
+---
+
+## Parity With the Python Reference
+
+The C++/ONNX path is parity-checked against the upstream Python reference:
+
+- **Python forward call** (MonocularWrapper):
+  `model.model(imgs.unsqueeze(1), None, None, None, False, False, "saddle_balanced")`
+- **ONNX graph**: input image `[1, 3, H, W]` → outputs depth `[1, H, W]` and
+  optional confidence `[1, H, W]`; exported with **opset 17** and **dynamic axes**
+  (any H, W divisible by 14)
+- **C++ preprocessing** (`Config{process_res = 504, patch_size = 14}`): the input
+  image's longest side is resized to `process_res`, `H` and `W` are rounded to be
+  divisible by 14, and ImageNet normalization
+  (`means = {0.485, 0.456, 0.406}`, `stds = {0.229, 0.224, 0.225}`) is applied.
+
+---
+
+## Scope: Multi-View Mode (Deferred)
+
+The upstream DA3 package also supports **any-view (multi-view) reconstruction**,
+which is out of scope for this C++ inference engine and **deferred to Phase 3**:
+
+- Depth/confidence maps of shape `[N, H, W]`, extrinsics `[N, 3, 4]`, and
+  intrinsics `[N, 3, 3]` for N input views
+- Camera options such as `use_ray_pose` and `ref_view_strategy`
+- Streaming inference for scenes that do not fit in `<12GB` of GPU memory
+- 3D asset exports: `glb` / `npz` / `ply` / `3DGS video`
+
+This repository currently covers the **monocular** depth-estimation path only.
 
 ---
 

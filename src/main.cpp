@@ -1,5 +1,6 @@
 #include "depth_anything3_inference.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -99,7 +100,9 @@ int main(int argc, const char *argv[]) {
         config.process_res = process_res;
         config.output_conf = output_conf;
 
+        const auto t_init_start = std::chrono::steady_clock::now();
         DepthAnything3Inference inference(model_path, config);
+        const auto t_init_end = std::chrono::steady_clock::now();
 
         int orig_h = 0;
         int orig_w = 0;
@@ -110,9 +113,16 @@ int main(int argc, const char *argv[]) {
         std::cout << "Input image: " << orig_h << "x" << orig_w << std::endl;
         std::cout << "Model input: " << out_h << "x" << out_w << std::endl;
 
+        const auto t_infer_start = std::chrono::steady_clock::now();
         inference.run_inference(input_data, out_h, out_w);
+        const auto t_infer_end = std::chrono::steady_clock::now();
 
         const DepthResult result = inference.postprocess_outputs(out_h, out_w, orig_h, orig_w, upscale_to_orig);
+
+        const double init_ms = std::chrono::duration<double, std::milli>(t_init_end - t_init_start).count();
+        const double infer_ms = std::chrono::duration<double, std::milli>(t_infer_end - t_infer_start).count();
+        std::cout << "Timing: init " << init_ms << " ms (model load), infer " << infer_ms << " ms (H2D + GPU + D2H)"
+                  << std::endl;
 
         // Colorize and save depth map
         const cv::Mat depth_vis = DepthAnything3Inference::colorize_depth(result.depth);

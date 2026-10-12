@@ -84,3 +84,9 @@ ffmpeg -y -i /tmp/da3vid/rgb504.mp4 -i /tmp/da3vid/depth_trt.mp4 \
 `/tmp/da3vid2/side_by_side.mp4` (1008×504). Foreground legs resolve dark
 purple, mid crowd mid-tones, sky bright; boardwalk shows a clean near→far
 gradient; silhouettes align with RGB positions.
+
+Measured on RTX 3060 (`inference_app` prints `Timing:` per run):
+init ~740 ms (one-time engine deserialize), infer ~190–206 ms/frame
+(H2D + GPU + D2H, FP32). YouTube render (`youtube.mp4`, 2016×1008,
+`+faststart`) burns in title, RGB/depth labels, the 195 ms/frame figure,
+model and footage credits — see `docs/video-side-by-side.jpg`.

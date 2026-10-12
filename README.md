@@ -6,6 +6,8 @@
 
 C++ inference engine for **[Depth Anything 3](https://github.com/ByteDance-Seed/Depth-Anything-3)** monocular depth estimation, with **multiple inference backends** (ONNX Runtime and TensorRT) and OpenCV for image I/O and visualization.
 
+🎬 **Demo video**: [monocular depth on street footage — TensorRT 11 on RTX 3060](https://www.youtube.com/watch?v=7wUFLR9P0p4) (side-by-side RGB vs predicted depth, 195 ms/frame; replication: `docs/video-inference.md`)
+
 Other useful upstream links:
 
 - **Project page**: <https://depth-anything-3.github.io/> (abilities, demos, benchmark)

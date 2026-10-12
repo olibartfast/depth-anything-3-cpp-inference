@@ -14,9 +14,6 @@ Other useful upstream links:
 - **Hugging Face collection**: [depth-anything/depth-anything-3](https://huggingface.co/collections/depth-anything/depth-anything-3) — 11 items: `depth-anything-3-nested-giant-large-1.1`, `depth-anything-3-giant-1.1`, `depth-anything-3-large-1.1`, `depth-anything-3-base`, `depth-anything-3-small`, `depth-anything-3-metric-large`, `depth-anything-3-mono-large`, `depth-anything-3-nested-giant-large`, `depth-anything-3-giant`, `depth-anything-3-large`, plus the online demo space and the `DA3-BENCH` benchmark
 - **Camera depth models**: [depth-anything/camera-depth-models](https://huggingface.co/collections/depth-anything/camera-depth-models) — 7 items: `d405`, `d435`, `l515`, `kinect`, `zed2i-neural`, `zed2i-quality`, `base`
 
-The C++ design is inspired by:
-- [olibartfast/rf-detr-cpp-inference](https://github.com/olibartfast/rf-detr-cpp-inference)
-- [olibartfast/foundation-pose-cpp-inference](https://github.com/olibartfast/foundation-pose-cpp-inference)
 
 ---
 
@@ -160,11 +157,6 @@ sudo apt-get install -y clang-format-18 clang-tidy-18
 ## Building
 
 ### Backend Selection
-
-| Backend | Best For | Pros | Cons |
-|---------|----------|------|------|
-| **ONNX Runtime** | Development, CPU inference | Cross-platform, easy setup | Slower than TensorRT on GPU |
-| **TensorRT** | Production on NVIDIA GPUs | Maximum performance | GPU-only, requires CUDA/TensorRT |
 
 **Important**: Only ONE backend can be enabled at a time.
 
@@ -423,6 +415,3 @@ docker run -v $(pwd)/data:/data da3-onnx /data/model.onnx /data/image.jpg
 ## Acknowledgements
 
 - **Depth Anything 3** model: [ByteDance-Seed/Depth-Anything-3](https://github.com/ByteDance-Seed/Depth-Anything-3)
-- C++ design inspired by:
-  - [olibartfast/rf-detr-cpp-inference](https://github.com/olibartfast/rf-detr-cpp-inference)
-  - [olibartfast/foundation-pose-cpp-inference](https://github.com/olibartfast/foundation-pose-cpp-inference)

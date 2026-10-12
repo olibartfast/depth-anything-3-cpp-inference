@@ -21,8 +21,8 @@ Status values: `idea` · `planned` · `in progress` · `done` · `blocked` · `d
 - Spec: future dated packet
 
 ## Phase 1-GPU — GPU gate (Brev full + Colab partial)
-- Status: planned
-- Outcome: `inference_app` proven on real GPU (ORT-CUDA + TRT) with runbook + evidence
+- Status: in progress
+- Outcome: TRT 11.2.1.2 (build + onnx→engine + engine reuse) and ORT proven on RTX 3060 sm_86 and Brev L4 sm_89 with runbook + evidence (`evidence/2026-10-12-local-3060-trt11/`, `evidence/2026-10-12-brev-l4/`); Colab partial still pending (user-run notebook)
 - Proves: rented-GPU pattern from tritonic/rf-detr transfers to DA3
 - Spec: `specs/2026-10-11-da3-gpu-gate/` Branch: `spec/da3-gpu-gate`
 

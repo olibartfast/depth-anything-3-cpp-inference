@@ -1,11 +1,15 @@
-#include "mock_backend.hpp"
 #include "depth_anything3_inference.hpp"
+#include "mock_backend.hpp"
 #include "processing_utils.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <iterator>
+#include <string>
+#include <vector>
 
 // ============================================================================
 // normalize_image tests
@@ -27,9 +31,9 @@ TEST(NormalizeImage, AppliesMeanStd) {
 TEST(NormalizeImage, AllChannels) {
     // 2 pixels per channel, 3 channels = 6 floats
     std::vector<float> data = {
-        0.1f, 0.2f,  // channel 0
-        0.3f, 0.4f,  // channel 1
-        0.5f, 0.6f   // channel 2
+        0.1f, 0.2f, // channel 0
+        0.3f, 0.4f, // channel 1
+        0.5f, 0.6f  // channel 2
     };
     std::array<float, 3> means = {0.0f, 0.0f, 0.0f};
     std::array<float, 3> stds = {0.5f, 0.25f, 0.1f};
@@ -157,8 +161,7 @@ TEST(ApplyDepthColormap, UniformDepth) {
 class InferenceTest : public ::testing::Test {
   protected:
     // Build an inference instance using a MockBackend with a single depth output
-    std::unique_ptr<DepthAnything3Inference> make_inference(int out_h = 36, int out_w = 36,
-                                                            bool with_conf = false) {
+    std::unique_ptr<DepthAnything3Inference> make_inference(int out_h = 36, int out_w = 36, bool with_conf = false) {
         Config cfg;
         cfg.process_res = 504;
         cfg.output_conf = with_conf;
@@ -327,6 +330,89 @@ TEST(MockBackend, OutOfRangeThrows) {
     EXPECT_THROW(backend.get_output_shape(0), std::out_of_range);
     std::vector<float> out(4);
     EXPECT_THROW(backend.get_output_data(0, out.data(), 4), std::out_of_range);
+}
+
+// ============================================================================
+// NPY raw-dump header layout
+// ============================================================================
+
+namespace {
+
+// Mirrors write_npy_float32() in src/main.cpp. main.cpp is not includable from
+// the test target, so the writer is duplicated here to assert the on-disk NPY
+// v1.0 layout (magic, '<f4' descr, fortran_order False, shape tuple, 64-byte
+// preamble alignment). Keep in sync with the helper in src/main.cpp.
+void write_npy_float32_for_test(const cv::Mat &mat, const std::filesystem::path &path) {
+    ASSERT_EQ(mat.type(), CV_32F);
+
+    std::string header = "{'descr': '<f4', 'fortran_order': False, 'shape': (" + std::to_string(mat.rows) + ", " +
+                         std::to_string(mat.cols) + "), }";
+
+    const size_t preamble = 6 + 2 + 2;
+    const size_t unpadded = preamble + header.size() + 1;
+    header.append((64 - (unpadded % 64)) % 64, ' ');
+    header.push_back('\n');
+
+    std::ofstream out(path, std::ios::binary);
+    ASSERT_TRUE(out.is_open());
+
+    const char magic[6] = {'\x93', 'N', 'U', 'M', 'P', 'Y'};
+    out.write(magic, sizeof(magic));
+    out.put('\x01');
+    out.put('\x00');
+    const auto header_len = static_cast<uint16_t>(header.size());
+    out.put(static_cast<char>(header_len & 0xFFu));
+    out.put(static_cast<char>((header_len >> 8u) & 0xFFu));
+    out.write(header.data(), static_cast<std::streamsize>(header.size()));
+
+    const auto row_bytes = static_cast<std::streamsize>(mat.cols) * static_cast<std::streamsize>(sizeof(float));
+    for (int y = 0; y < mat.rows; ++y) {
+        out.write(reinterpret_cast<const char *>(mat.ptr<float>(y)), row_bytes);
+    }
+}
+
+} // namespace
+
+TEST(NpyDump, HeaderLayoutMatchesNpyV1) {
+    const std::filesystem::path tmp = std::filesystem::temp_directory_path() / "da3_npy_header_test.npy";
+    cv::Mat depth(3, 2, CV_32F);
+    depth.at<float>(0, 0) = 1.5f;
+    depth.at<float>(2, 1) = -2.25f;
+
+    write_npy_float32_for_test(depth, tmp);
+
+    std::ifstream in(tmp, std::ios::binary);
+    ASSERT_TRUE(in.is_open());
+    const std::vector<char> bytes{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    in.close();
+    std::filesystem::remove(tmp);
+
+    ASSERT_GE(bytes.size(), 10u);
+    // Magic "\x93NUMPY"
+    EXPECT_EQ(static_cast<unsigned char>(bytes[0]), 0x93u);
+    EXPECT_EQ(bytes[1], 'N');
+    EXPECT_EQ(bytes[2], 'U');
+    EXPECT_EQ(bytes[3], 'M');
+    EXPECT_EQ(bytes[4], 'P');
+    EXPECT_EQ(bytes[5], 'Y');
+    // Version 1.0
+    EXPECT_EQ(static_cast<unsigned char>(bytes[6]), 0x01u);
+    EXPECT_EQ(static_cast<unsigned char>(bytes[7]), 0x00u);
+
+    // Little-endian uint16 header length, then the python-dict header.
+    const auto hlen = static_cast<unsigned>(static_cast<unsigned char>(bytes[8])) |
+                      (static_cast<unsigned>(static_cast<unsigned char>(bytes[9])) << 8u);
+    ASSERT_GE(bytes.size(), 10u + hlen);
+    const std::string header(bytes.begin() + 10, bytes.begin() + 10 + hlen);
+
+    EXPECT_NE(header.find("'descr': '<f4'"), std::string::npos);
+    EXPECT_NE(header.find("'fortran_order': False"), std::string::npos);
+    EXPECT_NE(header.find("'shape': (3, 2)"), std::string::npos);
+    EXPECT_EQ(header.back(), '\n');
+    // Preamble (magic + version + length + header) must be 64-byte aligned.
+    EXPECT_EQ((10u + hlen) % 64u, 0u);
+    // Payload: H * W little-endian float32 values.
+    EXPECT_EQ(bytes.size(), static_cast<size_t>(10u + hlen) + 3u * 2u * sizeof(float));
 }
 
 int main(int argc, char **argv) {

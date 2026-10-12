@@ -25,6 +25,7 @@ TRT_SHORT_VERSION="${TRT_SHORT_VERSION:-11.2.1}"
 CUDA_VERSION_PIN="${CUDA_VERSION_PIN:-13.3}"
 
 ENV_FILE="${ENV_FILE:-/content/da3_gate_env.sh}"
+STAGE_DIR="${STAGE_DIR:-/content}"
 
 # CUDA_VERSION_PIN 13.3 -> apt suffix 13-3, install prefix /usr/local/cuda-13.3.
 CUDA_DASHED="${CUDA_VERSION_PIN//./-}"
@@ -71,12 +72,12 @@ step "TensorRT ${TRT_VERSION}"
 # time out on Colab. wget retries and resumes; the gate then uses the prefix
 # through TENSORRT_ROOTDIR.
 trt_tarball="TensorRT-Enterprise-${TRT_VERSION}-Linux-x86_64-cuda-${CUDA_VERSION_PIN}-Release-external.tar.zst"
-TENSORRT_ROOTDIR="/content/TensorRT-${TRT_VERSION}"
+TENSORRT_ROOTDIR="${STAGE_DIR}/TensorRT-${TRT_VERSION}"
 if [[ ! -f "${TENSORRT_ROOTDIR}/include/NvInfer.h" ]]; then
-    wget -c --tries=20 --timeout=60 -nv -O "/content/${trt_tarball}" \
+    wget -c --tries=20 --timeout=60 -nv -O "${STAGE_DIR}/${trt_tarball}" \
         "https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/${TRT_SHORT_VERSION}/tars/${trt_tarball}"
-    tar --zstd -xf "/content/${trt_tarball}" -C /content
-    rm -f "/content/${trt_tarball}"
+    tar --zstd -xf "${STAGE_DIR}/${trt_tarball}" -C "${STAGE_DIR}"
+    rm -f "${STAGE_DIR}/${trt_tarball}"
 fi
 
 step "environment -> ${ENV_FILE}"

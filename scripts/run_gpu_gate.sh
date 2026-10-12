@@ -46,7 +46,7 @@ if [[ -z "$MODEL" || -z "$IMAGE" ]]; then
   exit 0
 fi
 
-if ./build/inference_app "$MODEL" "$IMAGE" --conf --process-res "$PROCESS_RES" > "$RESULTS/logs/infer.log" 2>&1; then
+if ./build/inference_app "$MODEL" "$IMAGE" --conf --process-res "$PROCESS_RES" --dump-raw "$RESULTS/depth_ort.npy" > "$RESULTS/logs/infer.log" 2>&1; then
   cp -f output_depth.jpg "$RESULTS/" 2>/dev/null || true
   cp -f output_conf.jpg "$RESULTS/" 2>/dev/null || true
   if [[ -f "$RESULTS/output_depth.jpg" ]]; then
@@ -80,7 +80,7 @@ else
       -DUSE_ONNX_RUNTIME=OFF -DUSE_TENSORRT=ON > "$RESULTS/logs/build-trt.log" 2>&1 \
     && cmake --build build-trt --parallel >> "$RESULTS/logs/build-trt.log" 2>&1; then
     pass "V-3 trt-build"
-    if ./build-trt/inference_app "$TRT_MODEL" "$TRT_IMAGE" --process-res "$PROCESS_RES" > "$RESULTS/logs/infer-trt.log" 2>&1; then
+    if ./build-trt/inference_app "$TRT_MODEL" "$TRT_IMAGE" --process-res "$PROCESS_RES" --dump-raw "$RESULTS/depth_trt.npy" > "$RESULTS/logs/infer-trt.log" 2>&1; then
       cp -f output_depth.jpg "$RESULTS/output_depth_trt.jpg" 2>/dev/null || true
       if [[ -f "$RESULTS/output_depth_trt.jpg" ]]; then
         pass "V-4 trt-infer (onnx->engine)"
@@ -103,9 +103,17 @@ else
   fi
 fi
 
-# V-5 parity stub: single-backend run records depth range; cross-backend compare is Brev-full (T-6)
-if grep -E "Depth range" "$RESULTS/logs/infer.log" >> "$RESULTS/gate.log" 2>&1; then
-  unrun "V-5 parity (single run only; needs CPU vs CUDA vs TRT on Brev)"
+# V-5 numeric parity: raw float32 dumps from both backends — valid only when both
+# ran on the SAME image at the same resolution (TRT engine is fixed-shape).
+# Gate: mean-abs <= 1e-3 (see scripts/compare_depth.py).
+if [[ -f "$RESULTS/depth_ort.npy" && -f "$RESULTS/depth_trt.npy" && "$IMAGE" == "$TRT_IMAGE" ]]; then
+  if python3 scripts/compare_depth.py "$RESULTS/depth_ort.npy" "$RESULTS/depth_trt.npy" > "$RESULTS/logs/parity.log" 2>&1; then
+    pass "V-5 parity ORT-vs-TRT (see logs/parity.log)"
+  else
+    fail "V-5 parity ORT-vs-TRT (see logs/parity.log)"
+  fi
+elif grep -E "Depth range" "$RESULTS/logs/infer.log" >> "$RESULTS/gate.log" 2>&1; then
+  unrun "V-5 parity (single backend only; needs ORT + TRT dumps)"
 else
   unrun "V-5 parity (no depth range logged)"
 fi

@@ -11,10 +11,10 @@ CUDA_ARCH cheat-sheet (property of box): T4 `75`, A10G/A4000 `86`, L4/L40S `89`,
 
 ## Path A — Colab (do first, cheap arch cover)
 
-1. Export Small at home (free): `python export_onnx.py --model-name da3-small --output da3-small.onnx` + pick `test.jpg` (any photo, longest-side will map to 504/%14).
-2. Open `scripts/colab/gpu_gate.ipynb` in Colab → GPU T4 → Run all. It installs CUDA pin, builds ORT-CPU, runs `ctest -R UnitTests`, runs `inference_app da3-small.onnx test.jpg --conf`.
-3. Copy `output_depth.jpg` + console depth-range + `nvidia-smi` header into `evidence/<date>-colab-t4/`. Disconnect runtime when done.
-4. Limits (record as UNRUN not FAIL): no TRT engine build, no `compute-sanitizer` under forward-compat, pip OpenCV not NGC build.
+1. Export Small at home (free): `python export_onnx.py --model-name da3-small --output da3-small.onnx` (ORT smoke) + `python export_onnx.py --model-name da3-small --output da3-small-fixed.onnx --fixed-size` (TRT) + square `test504.png` (TRT engine is fixed-shape).
+2. Open `scripts/colab/gpu_gate.ipynb` in Colab → GPU T4 → Run all. It installs CUDA 13.3 + pre-stages TRT 11.2.1.2, builds ORT-CPU, runs `ctest -R UnitTests`, runs `inference_app` (ORT on test.jpg, TRT build+infer on test504.png).
+3. Copy `output_depth.jpg` + `output_depth_trt.jpg` + console depth-ranges + `nvidia-smi` header into `evidence/<date>-colab-t4/`. Disconnect runtime when done.
+4. Limits (record as UNRUN not FAIL): `compute-sanitizer` under forward-compat may be UNRUN, pip OpenCV not NGC build.
 
 ## Path B — Brev full gate
 
@@ -41,8 +41,9 @@ Pick on cores not VRAM (build-bound). Budget ≥2GB RAM/core or parallel `ninja`
 git ls-files --cached --others --exclude-standard | zip -q da3-gate.zip -@
 brev copy da3-gate.zip da3-gate:~/
 brev copy /tmp/da3-small.onnx da3-gate:~/
-brev exec da3-gate "rm -rf ~/da3 && mkdir ~/da3 && cd ~/da3 && unzip -q ~/da3-gate.zip && cp ~/da3-small.onnx ."
-brev exec da3-gate "cd ~/da3 && tmux new -d -s gate './scripts/run_gpu_gate.sh ~/gate-results > ~/gate.log 2>&1'"
+brev copy /tmp/da3-small-fixed.onnx da3-gate:~/
+brev exec da3-gate "rm -rf ~/da3 && mkdir ~/da3 && cd ~/da3 && unzip -q ~/da3-gate.zip && cp ~/da3-small.onnx . && cp ~/da3-small-fixed.onnx ."
+brev exec da3-gate "cd ~/da3 && tmux new -d -s gate 'MODEL=~/da3/da3-small.onnx IMAGE=~/da3/test.jpg TRT_MODEL=~/da3/da3-small-fixed.onnx TRT_IMAGE=~/da3/test504.png ./scripts/run_gpu_gate.sh ~/gate-results > ~/gate.log 2>&1'"
 brev exec da3-gate "cat ~/gate-results/STATUS; tail -5 ~/gate.log"  # poll
 ```
 `run_gpu_gate.sh` steps: `env` (V-0) → `ort-cpu` (V-1) → `ort-cuda` (V-2) → `trt-build` (V-3) → `trt-infer` (V-4) → `parity` (V-5) → `report`. Failing step logs FAIL but continues.

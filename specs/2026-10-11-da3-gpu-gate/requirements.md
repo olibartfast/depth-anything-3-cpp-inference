@@ -26,13 +26,14 @@ Prove DA3 C++ `inference_app` runs on a real NVIDIA GPU via rented Brev (full ga
 - [D-3] Colab supplements, not replaces Brev — Rationale: rf-detr pattern; Colab has no Docker/TRT full pin, Brev proves TRT parser + CUDA forward-compat.
 
 ## Constraints
-- H,W %14; one backend per binary (`USE_ONNX_RUNTIME` vs `USE_TENSORRT`); CUDA toolkit needed for TRT configure (auto-download at CMake time).
-- Local host has no GPU (`nvidia-smi` absent 2026-10-11) — all GPU checks are `[GPU]` maintainer-run.
-- Disk ≥100GB on Brev (ORT 1.21.0 + TRT 10.x + OpenCV builds + 350M ONNX).
+- H,W %14; one backend per binary (`USE_ONNX_RUNTIME` vs `USE_TENSORRT`); CUDA 13.3 toolkit needed for TRT configure (auto-download at CMake time; Colab gate pre-installs it).
+- TRT engine is fixed-shape: export with `--fixed-size` and run on a square image at the export resolution (gate uses `test504.png`).
+- TRT 11.2.1.2 / CUDA 13.3 — same pin as rf-detr-cpp-inference `versions.env`.
+- Disk ≥100GB on Brev (ORT 1.21.0 + TRT 11.2.1.2 + OpenCV builds + ONNX).
 
 ## Dependencies
 - Codebase: `src/backends/onnx_runtime_backend.cpp`, `tensorrt_backend.cpp`, `src/main.cpp`, `export_onnx.py:91-119`, `CMakeLists.txt:41-52`.
-- External: `brev` CLI (login needed), Docker + NVIDIA toolkit on Brev image, HF `DA3-Small` weights, pinned ORT 1.21.0 / TRT 10.x.
+- External: `brev` CLI (login needed), Docker + NVIDIA toolkit on Brev image, HF `DA3-Small` weights, pinned ORT 1.21.0 / TRT 11.2.1.2 (CUDA 13.3).
 
 ## Assumptions & Open Questions
 - [A-1] Brev Deep Learning AMI has driver ≥R580 + CUDA 13.x with forward-compat for ORT/TRT containers — Basis: tritonic A10G run driver 595.91.

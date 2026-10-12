@@ -1,0 +1,16 @@
+Using backend: TensorRT
+[TensorRT] Building engine from ONNX model...
+[TensorRT] Strongly typed build: engine precision follows the ONNX model (convert it to FP16 beforehand for an FP16 engine)
+[TensorRT] Building engine... This may take a few minutes.
+[TensorRT] Engine built successfully
+[TensorRT] Engine saved to: "/home/ubuntu/da3/da3-small-fixed.engine"
+[TensorRT] Model has 3 bindings
+  Binding 0: image (input) - Shape: [1, 3, 504, 504]
+  Binding 1: depth (output) - Shape: [1, 504, 504]
+  Binding 2: conf (output) - Shape: [1, 504, 504]
+[TensorRT] Initialization complete
+Model loaded successfully with 2 output(s).
+Input image: 504x504
+Model input: 504x504
+Depth map saved to: output_depth.jpg
+Depth range: [0.417865, 1.80692]

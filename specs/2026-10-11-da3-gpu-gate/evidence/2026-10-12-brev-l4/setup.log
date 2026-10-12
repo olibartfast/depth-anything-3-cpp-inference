@@ -1,0 +1,29 @@
+
+=== GPU ===
+name, compute_cap, driver_version, memory.total [MiB]
+NVIDIA L4, 8.9, 595.91.07, 23034 MiB
+CUDA_ARCH=89  driver major=595  nproc=4  RAM=15G
+
+=== CUDA 13.3 toolkit from the NVIDIA apt repository ===
+(Reading database ... 118310 files and directories currently installed.)
+Preparing to unpack .../cuda-keyring.deb ...
+Unpacking cuda-keyring (1.1-1) over (1.1-1) ...
+Setting up cuda-keyring (1.1-1) ...
+
+=== TensorRT 11.2.1.2 ===
+2026-10-12 16:16:13 URL:https://developer.download.nvidia.com/compute/machine-learning/tensorrt/11.2.1/tars/TensorRT-Enterprise-11.2.1.2-Linux-x86_64-cuda-13.3-Release-external.tar.zst [3728985885/3728985885] -> "/content/TensorRT-Enterprise-11.2.1.2-Linux-x86_64-cuda-13.3-Release-external.tar.zst" [1]
+
+=== environment -> /home/ubuntu/da3_gate_env.sh ===
+# written by scripts/colab/setup_colab.sh on 2026-10-12T16:16:30+00:00
+export PATH="/usr/local/cuda-13.3/bin:$PATH"
+export CUDACXX="/usr/local/cuda-13.3/bin/nvcc"
+export LD_LIBRARY_PATH="/usr/local/cuda-13.3/lib64:${LD_LIBRARY_PATH:-}"
+export CUDA_ARCH="89"
+export TENSORRT_ROOTDIR="/content/TensorRT-11.2.1.2"
+
+=== sanity check ===
+Cuda compilation tools, release 13.3, V13.3.73
+Build cuda_13.3.r13.3/compiler.38244171_0
+driver API 13020, runtime 13030, context: no error
+setup done
+SETUP_EXIT=0

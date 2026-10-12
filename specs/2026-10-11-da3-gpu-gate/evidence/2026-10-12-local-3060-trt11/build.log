@@ -1,0 +1,13 @@
+-- Backend configuration:
+--   ONNX Runtime: ON
+--   TensorRT:     OFF
+-- Configuring ONNX Runtime backend...
+-- Found existing ONNX Runtime at: /home/oli/repos/depth-anything-3-cpp-inference/build/_deps/onnxruntime-linux-x64-1.21.0
+-- ONNX Runtime include directory: /home/oli/repos/depth-anything-3-cpp-inference/build/_deps/onnxruntime-linux-x64-1.21.0/include
+-- ONNX Runtime library: /home/oli/repos/depth-anything-3-cpp-inference/build/_deps/onnxruntime-linux-x64-1.21.0/lib/libonnxruntime.so.1.21.0
+-- OpenCV include directories: /usr/include/opencv4
+-- OpenCV libraries: opencv_core;opencv_imgproc;opencv_imgcodecs;opencv_highgui
+-- Configuring done (0.7s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/oli/repos/depth-anything-3-cpp-inference/build
+ninja: no work to do.

@@ -115,26 +115,45 @@ if(USE_ONNX_RUNTIME)
 endif()
 
 # --- TensorRT Configuration ---
+# Pinned to the same version as rf-detr-cpp-inference (versions.env):
+# TensorRT 11.2.1.2 built against CUDA 13.3. The 11.x Linux tarball is
+# zstd-compressed and named
+#   TensorRT-Enterprise-<version>-Linux-x86_64-cuda-<cuda>-Release-external.tar.zst
+# and unpacks to TensorRT-<version>/. `cmake -E tar` detects the compression
+# on extraction. Only TensorRT 11 is supported (strongly-typed network:
+# engine precision follows the ONNX graph, no kFP16 flag).
 if(USE_TENSORRT)
     message(STATUS "Configuring TensorRT backend...")
 
-    set(TRT_MAJOR "10")
-    set(TRT_MINOR ".13")
-    set(TRT_PATCH ".3")
-    set(TRT_BUILD ".9")
-    set(TRT_VERSION "${TRT_MAJOR}${TRT_MINOR}${TRT_PATCH}${TRT_BUILD}")
-    set(TRT_CUDA_VERSION "13.0")
+    set(TRT_VERSION "11.2.1.2" CACHE STRING "TensorRT version (four-component)")
+    set(TRT_CUDA_VERSION "13.3" CACHE STRING "CUDA series TensorRT is built against")
+    # Major.minor.patch truncation: used for the download URL directory.
+    string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" TRT_SHORT_VERSION "${TRT_VERSION}")
 
-    set(TRT_ARCHIVE_BASENAME "TensorRT-${TRT_VERSION}.Linux.x86_64-gnu.cuda-${TRT_CUDA_VERSION}")
-    set(TRT_ARCHIVE_NAME "${TRT_ARCHIVE_BASENAME}.tar.gz")
-    set(TRT_URL "https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/${TRT_MAJOR}${TRT_MINOR}${TRT_PATCH}/tars/${TRT_ARCHIVE_NAME}")
+    if(TRT_VERSION VERSION_LESS 11)
+        message(FATAL_ERROR "TRT_VERSION=${TRT_VERSION}: only TensorRT 11 is supported")
+    endif()
+
+    # NOTE: same Enterprise tarball layout as rf-detr-cpp-inference; it unpacks
+    # to TensorRT-<version>/.
+    set(TRT_ARCHIVE_NAME "TensorRT-Enterprise-${TRT_VERSION}-Linux-x86_64-cuda-${TRT_CUDA_VERSION}-Release-external.tar.zst")
+    set(TRT_URL "https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/${TRT_SHORT_VERSION}/tars/${TRT_ARCHIVE_NAME}")
+
+    # A pre-staged prefix (Colab/Brev gate scripts pre-download with wget
+    # retries) wins over the in-build download.
+    if(DEFINED ENV{TENSORRT_ROOTDIR} AND NOT TENSORRT_ROOTDIR)
+        set(TENSORRT_ROOTDIR "$ENV{TENSORRT_ROOTDIR}" CACHE PATH "Path to TensorRT root directory")
+    endif()
 
     set(TRT_DEPS_DIR "${CMAKE_BINARY_DIR}/_deps")
     set(TRT_DOWNLOAD_PATH "${TRT_DEPS_DIR}/${TRT_ARCHIVE_NAME}")
     set(TRT_EXTRACT_DIR "${TRT_DEPS_DIR}")
     set(TRT_INSTALL_DIR "${TRT_EXTRACT_DIR}/TensorRT-${TRT_VERSION}")
 
-    if(NOT EXISTS "${TRT_INSTALL_DIR}/include/NvInfer.h")
+    if(TENSORRT_ROOTDIR AND EXISTS "${TENSORRT_ROOTDIR}/include/NvInfer.h")
+        message(STATUS "Using pre-staged TensorRT at: ${TENSORRT_ROOTDIR}")
+        set(TRT_INSTALL_DIR "${TENSORRT_ROOTDIR}")
+    elseif(NOT EXISTS "${TRT_INSTALL_DIR}/include/NvInfer.h")
         message(STATUS "TensorRT not found in build directory. Downloading and extracting...")
         file(MAKE_DIRECTORY "${TRT_DEPS_DIR}")
         if(NOT EXISTS "${TRT_DOWNLOAD_PATH}")
@@ -152,9 +171,9 @@ if(USE_TENSORRT)
         else()
             message(STATUS "Using existing TensorRT archive: ${TRT_DOWNLOAD_PATH}")
         endif()
-        message(STATUS "Extracting ${TRT_DOWNLOAD_PATH} to ${TRT_EXTRACT_DIR}...")
+        message(STATUS "Extracting ${TRT_DOWNLOAD_PATH} to ${TRT_EXTRACT_DIR} (format auto-detected)...")
         execute_process(
-            COMMAND ${CMAKE_COMMAND} -E tar xzf "${TRT_DOWNLOAD_PATH}"
+            COMMAND ${CMAKE_COMMAND} -E tar xf "${TRT_DOWNLOAD_PATH}"
             WORKING_DIRECTORY "${TRT_EXTRACT_DIR}"
             RESULT_VARIABLE extract_result
         )
@@ -174,17 +193,23 @@ if(USE_TENSORRT)
     set(TENSORRT_LIBRARY "${TENSORRT_ROOTDIR}/lib/libnvinfer.so")
     set(TENSORRT_ONNX_PARSER "${TENSORRT_ROOTDIR}/lib/libnvonnxparser.so")
 
-    # Find CUDA runtime
-    find_package(CUDA QUIET)
-    if(NOT CUDA_FOUND)
-        find_library(CUDA_RUNTIME_LIBRARY cudart
-            HINTS
-                /usr/local/cuda/lib64
-                /usr/lib/x86_64-linux-gnu
-            PATH_SUFFIXES lib lib64
-        )
+    # Find CUDA runtime (prefer the toolkit matching TRT_CUDA_VERSION)
+    find_package(CUDAToolkit QUIET)
+    if(CUDAToolkit_FOUND)
+        set(CUDA_RUNTIME_LIBRARY CUDA::cudart)
     else()
-        set(CUDA_RUNTIME_LIBRARY ${CUDA_LIBRARIES})
+        find_package(CUDA QUIET)
+        if(NOT CUDA_FOUND)
+            find_library(CUDA_RUNTIME_LIBRARY cudart
+                HINTS
+                    /usr/local/cuda-${TRT_CUDA_VERSION}/lib64
+                    /usr/local/cuda/lib64
+                    /usr/lib/x86_64-linux-gnu
+                PATH_SUFFIXES lib lib64
+            )
+        else()
+            set(CUDA_RUNTIME_LIBRARY ${CUDA_LIBRARIES})
+        endif()
     endif()
 
     if(NOT EXISTS "${TENSORRT_INCLUDE_DIR}/NvInfer.h")

@@ -70,7 +70,7 @@ The C++ design is inspired by:
 - **Acceleration**: CPU and GPU
 
 #### TensorRT Backend (Optional)
-- **TensorRT**: Version 10.x (automatically downloaded during CMake configure)
+- **TensorRT**: Version 11.2.1.2 (same pin as rf-detr-cpp-inference) + CUDA 13.3 toolkit (automatically downloaded during CMake configure; strongly typed — engine precision follows the ONNX graph)
 - **CUDA Toolkit**: Must be installed manually
 - **Platform**: Linux with NVIDIA GPU
 
@@ -188,6 +188,14 @@ cmake --build build --parallel
 ```
 
 ### Build with TensorRT Backend
+
+> **Static shapes required**: the TensorRT backend sets no optimization
+> profile, so the ONNX model must have static spatial dims. Export with
+> `--fixed-size` for this path:
+> ```bash
+> python export_onnx.py --model-name da3-small --output model_fixed.onnx --fixed-size --process-res 504
+> ```
+> (Dynamic-axes exports are rejected at engine-build time with a clear error.)
 
 ```bash
 cmake -S . -B build -G Ninja \

@@ -1,0 +1,40 @@
+== nvidia-smi ==
+Mon Oct 12 16:03:16 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 610.43.02              KMD Version: 610.43.02     CUDA UMD Version: 13.3     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA GeForce RTX 3060 ...    Off |   00000000:01:00.0 Off |                  N/A |
+| N/A   44C    P8             15W /   80W |      16MiB /   6144MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A            2019      G   /usr/bin/gnome-shell                      2MiB |
++-----------------------------------------------------------------------------------------+
+== git ==
+0804298
+== cmake ==
+cmake version 3.28.3
+== ORT/TRT pins ==
+    set(ORT_VERSION "1.21.0")
+    set(ORT_ARCHIVE_BASENAME "onnxruntime-linux-x64-${ORT_VERSION}")
+    set(ORT_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/${ORT_ARCHIVE_NAME}")
+    set(ONNXRUNTIME_LIBRARY "${ONNXRUNTIME_ROOTDIR}/lib/libonnxruntime.so.${ORT_VERSION}")
+    set(TRT_VERSION "11.2.1.2" CACHE STRING "TensorRT version (four-component)")
+    set(TRT_CUDA_VERSION "13.3" CACHE STRING "CUDA series TensorRT is built against")
+    string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" TRT_SHORT_VERSION "${TRT_VERSION}")
+    if(TRT_VERSION VERSION_LESS 11)
+        message(FATAL_ERROR "TRT_VERSION=${TRT_VERSION}: only TensorRT 11 is supported")
+    set(TRT_ARCHIVE_NAME "TensorRT-Enterprise-${TRT_VERSION}-Linux-x86_64-cuda-${TRT_CUDA_VERSION}-Release-external.tar.zst")
+    set(TRT_URL "https://developer.nvidia.com/downloads/compute/machine-learning/tensorrt/${TRT_SHORT_VERSION}/tars/${TRT_ARCHIVE_NAME}")
+    set(TRT_INSTALL_DIR "${TRT_EXTRACT_DIR}/TensorRT-${TRT_VERSION}")
+    # Find CUDA runtime (prefer the toolkit matching TRT_CUDA_VERSION)
+                    /usr/local/cuda-${TRT_CUDA_VERSION}/lib64

@@ -1,0 +1,18 @@
+[gate] env written to /home/ubuntu/gate-results/environment.txt
+[gate] env written to /home/ubuntu/gate-results/environment.txt
+[gate] PASS V-1 ort-cpu-build+UnitTests
+[gate] PASS V-2 infer depth+conf
+[gate] PASS V-3 trt-build
+[gate] FAIL V-4 trt-infer (see logs/infer-trt.log)
+Depth range: [0.417894, 1.80673]
+[gate] UNRUN V-5 parity (single run only; needs CPU vs CUDA vs TRT on Brev)
+[gate] done. STATUS:
+[gate] env written to /home/ubuntu/gate-results/environment.txt
+[gate] PASS V-1 ort-cpu-build+UnitTests
+[gate] PASS V-2 infer depth+conf
+[gate] PASS V-3 trt-build
+[gate] PASS V-4 trt-infer (onnx->engine)
+[gate] PASS V-4 trt-engine-reuse
+Depth range: [0.417894, 1.80673]
+[gate] UNRUN V-5 parity (single run only; needs CPU vs CUDA vs TRT on Brev)
+[gate] done. STATUS:

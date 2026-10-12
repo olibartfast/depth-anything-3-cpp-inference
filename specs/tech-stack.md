@@ -4,7 +4,7 @@
 - Language: C++20 (Clang 15+/GCC 12+, CI uses clang-18)
 - Build: CMake >=3.12, Ninja recommended; `da3_inference_lib` static + `inference_app` + `unit_tests`
 - Libs: OpenCV 4.x (`core, imgproc, imgcodecs, highgui`), Threads
-- Backends (compile-time, exactly one): ONNX Runtime 1.21.0 auto-download (Linux/Win/macOS, CPU/GPU) OR TensorRT 10.x auto-download + manual CUDA (Linux+NVIDIA only)
+- Backends (compile-time, exactly one): ONNX Runtime 1.21.0 auto-download (Linux/Win/macOS, CPU/GPU) OR TensorRT 11.2.1.2 auto-download + CUDA 13.3 toolkit (Linux+NVIDIA only; same pin as rf-detr-cpp-inference)
 - Tests: GoogleTest 1.12.1 via FetchContent, `ctest -R UnitTests` model-free; Benchmarks opt-in (`-DBENCHMARKS=ON`, google/benchmark v1.9.1)
 - Lint: `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` etc.; opt-in `-DWERROR=ON`, `-DSANITIZERS=ON`; `clang-format-18`, `clang-tidy-18`, `cppcheck`
 - Docker: `ubuntu:22.04` builder + runtime, ORT `.so` copied next to binary

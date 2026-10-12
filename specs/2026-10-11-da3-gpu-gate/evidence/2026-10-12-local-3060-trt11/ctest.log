@@ -1,0 +1,8 @@
+Internal ctest changing into directory: /home/oli/repos/depth-anything-3-cpp-inference/build
+Test project /home/oli/repos/depth-anything-3-cpp-inference/build
+    Start 1: UnitTests
+1/1 Test #1: UnitTests ........................   Passed    0.16 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =   0.16 sec

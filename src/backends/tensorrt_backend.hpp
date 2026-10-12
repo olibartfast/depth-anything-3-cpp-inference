@@ -10,22 +10,19 @@
 #include <cuda_runtime_api.h>
 #include <memory>
 
-// Check TensorRT version compatibility
-#if NV_TENSORRT_MAJOR < 8
-#error "TensorRT 8.0 or newer is required"
+// Only TensorRT 11 is supported (same pin as rf-detr-cpp-inference:
+// versions.env TENSORRT_VERSION=11.2.1.2, CUDA 13.3).
+#if NV_TENSORRT_MAJOR < 11
+#error "TensorRT 11 or newer is required"
 #endif
 
 namespace da3::backend {
 
-// Custom deleter for TensorRT objects
+// Custom deleter for TensorRT objects (TRT 11 uses plain delete)
 struct TensorRTDeleter {
     template <typename T> void operator()(T *obj) const {
         if (obj) {
-#if NV_TENSORRT_MAJOR >= 10
             delete obj;
-#else
-            obj->destroy();
-#endif
         }
     }
 };
@@ -35,6 +32,12 @@ struct TensorRTDeleter {
  *
  * This backend uses NVIDIA TensorRT for optimized GPU inference.
  * Provides low-latency and high-throughput inference on NVIDIA GPUs.
+ *
+ * TensorRT 11 is strongly typed: engine precision follows the ONNX graph,
+ * so FP16 comes from converting the ONNX beforehand (no kFP16 flag).
+ * The ONNX model must have static shapes — export with
+ * `export_onnx.py --fixed-size` for the TensorRT path (dynamic spatial
+ * dims are rejected at build time with a clear error).
  */
 class TensorRTBackend : public InferenceBackend {
   public:
@@ -59,6 +62,9 @@ class TensorRTBackend : public InferenceBackend {
     [[nodiscard]] std::string get_backend_name() const override { return "TensorRT"; }
 
   private:
+    // Binds every IO tensor address and enqueues on stream_. Does not synchronise.
+    void enqueue();
+
     // TensorRT logger
     class Logger : public nvinfer1::ILogger {
       public:
@@ -83,8 +89,14 @@ class TensorRTBackend : public InferenceBackend {
     std::vector<void *> device_buffers_;
     std::vector<std::vector<float>> host_output_buffers_;
 
+    // Dedicated non-blocking stream. Everything — the host path's copies and
+    // the enqueue — runs here rather than on the legacy default stream, which
+    // serialises against the whole process.
+    cudaStream_t stream_{nullptr};
+
     // Tensor metadata
     std::vector<std::vector<int64_t>> output_shapes_;
+    size_t input_element_count_ = 0;
     int input_binding_index_ = -1;
     std::vector<int> output_binding_indices_;
 };

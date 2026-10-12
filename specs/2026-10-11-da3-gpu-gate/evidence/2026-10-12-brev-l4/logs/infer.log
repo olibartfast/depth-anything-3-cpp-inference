@@ -1,0 +1,12 @@
+Using backend: ONNX Runtime
+[ONNX Runtime] Auto-detected static input shape: [1, 3, 504, 504]
+[ONNX Runtime] Input name: image
+[ONNX Runtime] Model has 2 outputs:
+  Output 0: depth
+  Output 1: conf
+Model loaded successfully with 2 output(s).
+Input image: 504x504
+Model input: 504x504
+Depth map saved to: output_depth.jpg
+Depth range: [0.417894, 1.80673]
+Confidence map saved to: output_conf.jpg

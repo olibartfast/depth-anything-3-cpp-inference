@@ -15,10 +15,22 @@ Proven 2026-10-12 on RTX 3060 (sm_86), TRT 11.2.1.2, `da3-small` fixed-size mode
 
 ## 1. Source clip
 
-Any clip works. The proven run used a 1280×720 25 fps Pexels walking clip
-(first 5 s, 125 frames). The fixed 504×504 engine needs **square** input
+Any clip works. The proven run used a clean Pexels clip (no overlays):
+`https://www.pexels.com/video/people-walking-on-the-street-8996518`
+(HD 720×1280 portrait, 30 fps), fetched via the direct file link
+`https://videos.pexels.com/video-files/8996518/8996518-hd_720_1280_30fps.mp4`.
+The fixed 504×504 engine needs **square** input
 (aspect-preserving preprocess maps square → exactly the engine shape), so
-center-crop to square and scale:
+center-crop to square and scale (first 5 s, 150 frames):
+
+```bash
+mkdir -p /tmp/da3vid2/frames /tmp/da3vid2/depth
+ffmpeg -y -i pexels-clean.mp4 -t 5 \
+  -vf "crop=720:720:0:280,scale=504:504" /tmp/da3vid2/frames/f%04d.png
+```
+
+(Adjust the `crop` to your clip: `crop=<w>:<w>:0:<y>` for portrait `w×H`,
+`crop=<h>:<h>:<x>:0` for landscape. Pick the window covering the subjects.)
 
 ```bash
 mkdir -p /tmp/da3vid/frames /tmp/da3vid/depth
@@ -68,6 +80,7 @@ ffmpeg -y -i /tmp/da3vid/rgb504.mp4 -i /tmp/da3vid/depth_trt.mp4 \
 
 ## Proven result
 
-125/125 frames, `/tmp/da3vid/depth_trt.mp4` (504×504, 25 fps, 5 s),
-`/tmp/da3vid/side_by_side.mp4` (1008×504). Near pedestrians resolve dark
-against bright background; silhouettes align with RGB positions.
+150/150 frames in 211 s, `/tmp/da3vid2/depth_trt.mp4` (504×504, 30 fps, 5 s),
+`/tmp/da3vid2/side_by_side.mp4` (1008×504). Foreground legs resolve dark
+purple, mid crowd mid-tones, sky bright; boardwalk shows a clean near→far
+gradient; silhouettes align with RGB positions.

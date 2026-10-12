@@ -1,0 +1,4 @@
+shapes: (504, 504) == (504, 504)
+max-abs:  0.00170124
+mean-abs: 4.08723e-05 (tol=0.001)
+PASS parity

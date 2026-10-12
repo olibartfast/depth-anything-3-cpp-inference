@@ -4,4 +4,4 @@ PASS V-2 infer depth+conf
 PASS V-3 trt-build
 PASS V-4 trt-infer (onnx->engine)
 PASS V-4 trt-engine-reuse
-UNRUN V-5 parity (single run only; needs CPU vs CUDA vs TRT on Brev)
+PASS V-5 parity ORT-vs-TRT (see logs/parity.log)

@@ -90,7 +90,7 @@ init ~740 ms (one-time engine deserialize), infer ~190–206 ms/frame
 (H2D + GPU + D2H, FP32). YouTube render (`youtube.mp4`, 2016×1008,
 `+faststart`) burns in title, RGB/depth labels, the 195 ms/frame figure,
 model and footage credits — see `docs/video-side-by-side.jpg`.
-A calmer 0.5× slow-motion variant (`youtube_slow.mp4`, ~10 s, motion-
-interpolated frames via `setpts=2*PTS,minterpolate=fps=30`, depth label
-notes the slowdown) is the better upload: input and depth outputs are
-natively 30 fps, so real-time motion feels rushed on a 5 s clip.
+A calmer variant for upload (`youtube_4fps.mp4`, 37.5 s at 30 fps):
+each inferred frame held 250 ms via `setpts=7.5*PTS` (frame duplication,
+no motion-blur interpolation — an earlier `minterpolate` 0.5× attempt was
+discarded for blur). Depth label notes the 250 ms/frame cadence.

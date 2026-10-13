@@ -9,7 +9,7 @@ Status values: `idea` · `planned` · `in progress` · `done` · `blocked` · `d
 - Spec: `specs/2026-10-11-da3-upstream-alignment/` Branch: `spec/da3-upstream-alignment`
 
 ## Phase 2 — Camera-depth + metric handling
-- Status: in progress
+- Status: done (2026-10-13, `spec/da3-camera-depth`)
 - Outcome: metric formula + camera-specific models (D405/D435/L515/Kinect/ZED2I-neural/ZED2I-quality/base) documented, unit-tested scaling helper, README table updated
 - Proves: metric users get correct real-world scale
 - Spec: `specs/2026-10-13-da3-camera-depth/` Branch: `spec/da3-camera-depth` (supercedes R-5 stub in `2026-10-11-da3-upstream-alignment/`)
@@ -21,7 +21,7 @@ Status values: `idea` · `planned` · `in progress` · `done` · `blocked` · `d
 - Spec: future dated packet
 
 ## Phase 1-GPU — GPU gate (Brev full + Colab partial)
-- Status: in progress
+- Status: in progress (notebook authored 2026-10-13 in `spec/da3-colab-gate`, execution PENDING-USER-RUN)
 - Outcome: TRT 11.2.1.2 (build + onnx→engine + engine reuse) and ORT proven on RTX 3060 sm_86 and Brev L4 sm_89 with runbook + evidence (`evidence/2026-10-12-local-3060-trt11/`, `evidence/2026-10-12-brev-l4/`); Colab partial still pending (user-run notebook)
 - Proves: rented-GPU pattern from tritonic/rf-detr transfers to DA3
 - Spec: `specs/2026-10-11-da3-gpu-gate/` Branch: `spec/da3-gpu-gate`

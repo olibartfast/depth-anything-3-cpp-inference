@@ -310,12 +310,15 @@ inline void backproject_point(const FrameData &frame, int u, int v, float z, flo
 
 /// Back-project every frame's depth map into an ASCII PLY point cloud.
 /// COUNT = H*W*N over all non-empty frames.
+/// @param stride  Pixel subsampling (1 = every pixel; 2 = every 2nd row/col).
 [[nodiscard]] inline bool save_point_cloud_ply(const std::filesystem::path &path,
-                                               const std::vector<FrameData> &frames) {
+                                               const std::vector<FrameData> &frames, int stride = 1) {
+    const int step = stride > 0 ? stride : 1;
     std::size_t total = 0;
     for (const auto &frame : frames) {
         if (!frame.depth.empty()) {
-            total += static_cast<std::size_t>(frame.depth.rows) * static_cast<std::size_t>(frame.depth.cols);
+            total += static_cast<std::size_t>((frame.depth.rows + step - 1) / step) *
+                     static_cast<std::size_t>((frame.depth.cols + step - 1) / step);
         }
     }
 
@@ -340,9 +343,9 @@ inline void backproject_point(const FrameData &frame, int u, int v, float z, flo
             continue;
         }
         const cv::Mat color = frame_color_at_depth_size(frame);
-        for (int v = 0; v < frame.depth.rows; ++v) {
+        for (int v = 0; v < frame.depth.rows; v += step) {
             const float *depth_row = frame.depth.ptr<float>(v);
-            for (int u = 0; u < frame.depth.cols; ++u) {
+            for (int u = 0; u < frame.depth.cols; u += step) {
                 float x = 0.0f;
                 float y = 0.0f;
                 float z = 0.0f;
@@ -369,11 +372,13 @@ inline void backproject_point(const FrameData &frame, int u, int v, float z, flo
 /// opacity=1, scales from the local depth gradient (fallback 0.01*Z),
 /// normal +Z, rotation = identity quaternion.
 [[nodiscard]] inline bool save_gaussians_ply(const std::filesystem::path &path,
-                                             const std::vector<FrameData> &frames) {
+                                             const std::vector<FrameData> &frames, int stride = 1) {
+    const int gstep = stride > 0 ? stride : 1;
     std::size_t total = 0;
     for (const auto &frame : frames) {
         if (!frame.depth.empty()) {
-            total += static_cast<std::size_t>(frame.depth.rows) * static_cast<std::size_t>(frame.depth.cols);
+            total += static_cast<std::size_t>((frame.depth.rows + gstep - 1) / gstep) *
+                     static_cast<std::size_t>((frame.depth.cols + gstep - 1) / gstep);
         }
     }
 
@@ -412,10 +417,10 @@ inline void backproject_point(const FrameData &frame, int u, int v, float z, flo
         const int w = frame.depth.cols;
         const cv::Mat color = frame_color_at_depth_size(frame);
 
-        for (int v = 0; v < h; ++v) {
+        for (int v = 0; v < h; v += gstep) {
             const int v0 = std::max(0, v - 1);
             const int v1 = std::min(h - 1, v + 1);
-            for (int u = 0; u < w; ++u) {
+            for (int u = 0; u < w; u += gstep) {
                 const float z = frame.depth.at<float>(v, u);
                 float x = 0.0f;
                 float y = 0.0f;
@@ -528,12 +533,31 @@ class DepthAnything3Inference {
     /// Run inference on a preprocessed CHW float tensor.
     void run_inference(std::span<const float> input_data, int out_h, int out_w);
 
+    /// Run inference on N preprocessed CHW frames stacked as an [N,3,H,W] batch.
+    /// @param frames  N CHW tensors, each of size 3*out_h*out_w.
+    /// @throws std::invalid_argument when frames is empty or sizes differ.
+    void run_inference_batch(const std::vector<std::vector<float>> &frames, int out_h, int out_w);
+
     /// Extract depth (and optionally confidence) from the last inference run.
     /// @param out_h / out_w  Model output spatial dimensions (same as passed to run_inference).
     /// @param orig_h / orig_w  Original image dimensions (for optional upscaling).
     /// @param upscale_to_orig  If true, resize the depth map back to the original image resolution.
     [[nodiscard]] DepthResult postprocess_outputs(int out_h, int out_w, int orig_h, int orig_w,
                                                   bool upscale_to_orig = true);
+
+    /// Per-view slice of a batched run: same as postprocess_outputs but reads
+    /// view @p view from [N,H,W] outputs cached by run_inference_batch().
+    /// Falls back to the single output when the model returned [1,H,W].
+    [[nodiscard]] DepthResult postprocess_view(size_t view, int out_h, int out_w, int orig_h, int orig_w,
+                                               bool upscale_to_orig = true);
+
+    /// Per-view pose extraction from the cached outputs.
+    /// Matches [N,3,4] trailing dims for extrinsics and [N,3,3] for intrinsics
+    /// (the backend exposes indices + shapes, not names); @p pose is always
+    /// filled (identity fallback), @p intrinsics only overridden on a match.
+    /// @returns true when an extrinsics head was found.
+    [[nodiscard]] bool get_pose_view(size_t view, std::array<float, 12> &pose,
+                                     std::array<float, 4> &intrinsics) const;
 
     /// Produce a visualizable BGR depth colormap from a raw depth cv::Mat.
     [[nodiscard]] static cv::Mat colorize_depth(const cv::Mat &depth_map);
@@ -552,6 +576,11 @@ class DepthAnything3Inference {
     [[nodiscard]] int get_process_res() const noexcept { return config_.process_res; }
     [[nodiscard]] int get_patch_size() const noexcept { return config_.patch_size; }
     [[nodiscard]] const Config &get_config() const noexcept { return config_; }
+
+    /// Model input shape detected at initialize() time: [1,3,0,0] placeholder
+    /// for dynamic models, concrete [N,3,H,W] for static ones (e.g. dynamo
+    /// any-view exports). Drives the C++ N-view batch path + F-1 shape check.
+    [[nodiscard]] const std::vector<int64_t> &get_model_input_shape() const noexcept { return input_shape_; }
 
     /// Raw output tensors (data + shapes) cached by the last run_inference() call.
     /// Additive, read-only accessor used by the pose/point-map tasks, which need

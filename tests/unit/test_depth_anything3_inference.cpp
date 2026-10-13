@@ -8,6 +8,7 @@
 #include <fstream>
 #include <gtest/gtest.h>
 #include <iterator>
+#include <numeric>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -586,6 +587,98 @@ TEST(CameraFocalPrecedence, ExplicitFocalWins) {
     EXPECT_FALSE(camera_implies_already_metric(CameraPreset::base, /*focal_set=*/true));
     EXPECT_FALSE(camera_implies_already_metric(CameraPreset::d435, false));
     EXPECT_FALSE(camera_implies_already_metric(CameraPreset::none, false));
+}
+
+// ============================================================================
+// N-view batch API (Phase B): run_inference_batch + postprocess_view +
+// get_pose_view against a mock [N,H,W] / [N,3,4] / [N,3,3] backend.
+// ============================================================================
+
+namespace {
+
+std::unique_ptr<DepthAnything3Inference> make_batch_inference() {
+    Config cfg;
+    cfg.output_conf = true;
+    // 2 views, 2x3 spatial: depth values 1..12 (view0: 1..6, view1: 7..12).
+    std::vector<float> depth(12);
+    std::iota(depth.begin(), depth.end(), 1.0f);
+    std::vector<float> conf(12, 0.5f);
+    // Extrinsics: view1 carries tx=5; view0 identity.
+    std::vector<float> extr = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0,
+                               1, 0, 0, 5, 0, 1, 0, 0, 0, 0, 1, 0};
+    // Intrinsics K = [fx 0 cx; 0 fy cy; 0 0 1] with fx=100, fy=200, cx=3, cy=4.
+    std::vector<float> intr = {100, 0, 3, 0, 200, 4, 0, 0, 1, 100, 0, 3, 0, 200, 4, 0, 0, 1};
+    auto backend = std::make_unique<MockBackend>();
+    backend->set_outputs({depth, conf, extr, intr},
+                         {{2, 2, 3}, {2, 2, 3}, {2, 3, 4}, {2, 3, 3}});
+    return std::make_unique<DepthAnything3Inference>(std::move(backend), cfg);
+}
+
+} // namespace
+
+TEST(BatchInference, RunAndSliceViews) {
+    auto inf = make_batch_inference();
+    const std::vector<float> frame(static_cast<size_t>(3 * 2 * 3), 0.0f);
+    inf->run_inference_batch({frame, frame}, 2, 3);
+    auto v0 = inf->postprocess_view(0, 2, 3, 2, 3, false);
+    auto v1 = inf->postprocess_view(1, 2, 3, 2, 3, false);
+    EXPECT_FLOAT_EQ(v0.depth.at<float>(0, 0), 1.0f);
+    EXPECT_FLOAT_EQ(v0.depth.at<float>(1, 2), 6.0f);
+    EXPECT_FLOAT_EQ(v1.depth.at<float>(0, 0), 7.0f);
+    EXPECT_FLOAT_EQ(v1.depth.at<float>(1, 2), 12.0f);
+    EXPECT_FALSE(v0.conf.empty());
+    EXPECT_THROW(inf->postprocess_view(2, 2, 3, 2, 3, false), std::runtime_error);
+}
+
+TEST(BatchInference, EmptyThrows) {
+    auto inf = make_batch_inference();
+    EXPECT_THROW(inf->run_inference_batch({}, 2, 3), std::invalid_argument);
+    EXPECT_THROW(inf->postprocess_view(0, 2, 3, 2, 3, false), std::runtime_error);
+}
+
+TEST(BatchPoseView, PerViewExtrinsicsAndK) {
+    auto inf = make_batch_inference();
+    const std::vector<float> frame(static_cast<size_t>(3 * 2 * 3), 0.0f);
+    inf->run_inference_batch({frame, frame}, 2, 3);
+    std::array<float, 12> pose{};
+    std::array<float, 4> intr{};
+    EXPECT_TRUE(inf->get_pose_view(0, pose, intr));
+    EXPECT_FLOAT_EQ(pose[3], 0.0f); // view0 tx
+    // Proper K decomposition: {fx, fy, cx, cy} = {100, 200, 3, 4}.
+    EXPECT_FLOAT_EQ(intr[0], 100.0f);
+    EXPECT_FLOAT_EQ(intr[1], 200.0f);
+    EXPECT_FLOAT_EQ(intr[2], 3.0f);
+    EXPECT_FLOAT_EQ(intr[3], 4.0f);
+    EXPECT_TRUE(inf->get_pose_view(1, pose, intr));
+    EXPECT_FLOAT_EQ(pose[3], 5.0f); // view1 tx
+}
+
+TEST(BatchPoseView, IdentityWithoutHead) {
+    Config cfg;
+    auto backend = std::make_unique<MockBackend>();
+    backend->set_outputs({{1.0f, 2.0f, 3.0f, 4.0f}}, {{1, 2, 2}});
+    DepthAnything3Inference inf(std::move(backend), cfg);
+    const std::vector<float> frame(static_cast<size_t>(3 * 2 * 2), 0.0f);
+    inf.run_inference(frame, 2, 2);
+    std::array<float, 12> pose{};
+    std::array<float, 4> intr{1.0f, 2.0f, 3.0f, 4.0f};
+    EXPECT_FALSE(inf.get_pose_view(0, pose, intr));
+    EXPECT_FLOAT_EQ(pose[0], 1.0f); // identity fallback
+    EXPECT_FLOAT_EQ(intr[0], 1.0f); // untouched without a head
+}
+
+TEST(PlyStride, Subsamples) {
+    tasks::FrameData frame;
+    frame.depth = cv::Mat(4, 4, CV_32F, cv::Scalar(2.0f));
+    frame.image_bgr = cv::Mat(4, 4, CV_8UC3, cv::Scalar(1, 2, 3));
+    frame.pose = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+    frame.intrinsics = {100, 100, 2, 2};
+    const auto tmp = std::filesystem::temp_directory_path() / "da3_stride_test.ply";
+    ASSERT_TRUE(tasks::save_point_cloud_ply(tmp, {frame}, 2));
+    std::ifstream in(tmp);
+    std::string content{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    EXPECT_NE(content.find("element vertex 4"), std::string::npos); // 2x2 of 4x4
+    std::filesystem::remove(tmp);
 }
 
 int main(int argc, char **argv) {

@@ -80,6 +80,67 @@ void DepthAnything3Inference::run_inference(std::span<const float> input_data, i
     }
 }
 
+void DepthAnything3Inference::run_inference_batch(const std::vector<std::vector<float>> &frames, int out_h,
+                                                  int out_w) {
+    if (frames.empty()) {
+        throw std::invalid_argument("run_inference_batch: no frames");
+    }
+    const auto frame_elems = static_cast<size_t>(3) * static_cast<size_t>(out_h) * static_cast<size_t>(out_w);
+    for (size_t i = 0; i < frames.size(); ++i) {
+        if (frames[i].size() < frame_elems) {
+            throw std::invalid_argument("run_inference_batch: frame " + std::to_string(i) + " too small");
+        }
+    }
+    std::vector<float> stacked;
+    stacked.reserve(frames.size() * frame_elems);
+    for (const auto &frame : frames) {
+        stacked.insert(stacked.end(), frame.begin(), frame.begin() + static_cast<ptrdiff_t>(frame_elems));
+    }
+    const std::vector<int64_t> shape{static_cast<int64_t>(frames.size()), 3, static_cast<int64_t>(out_h),
+                                     static_cast<int64_t>(out_w)};
+    backend_->run_inference(stacked, shape);
+
+    const size_t num_outputs = backend_->get_output_count();
+    output_data_cache_.clear();
+    output_shapes_cache_.clear();
+    for (size_t i = 0; i < num_outputs; ++i) {
+        auto out_shape = backend_->get_output_shape(i);
+        const size_t size =
+            std::accumulate(out_shape.begin(), out_shape.end(), size_t{1},
+                            [](size_t acc, int64_t dim) { return acc * static_cast<size_t>(dim); });
+        std::vector<float> data(size);
+        backend_->get_output_data(i, data.data(), size);
+        output_data_cache_.push_back(std::move(data));
+        output_shapes_cache_.push_back(std::move(out_shape));
+    }
+}
+
+namespace {
+
+// Copy view @p view of an [N,H,W] (or [1,H,W]) float buffer into a CV_32F Mat.
+// H/W come from the trailing shape dims, falling back to @p out_h/out_w.
+cv::Mat extract_view_mat(const std::vector<float> &data, const std::vector<int64_t> &shape, size_t view, int out_h,
+                         int out_w) {
+    int h = out_h;
+    int w = out_w;
+    if (shape.size() >= 2) {
+        h = static_cast<int>(shape[shape.size() - 2]);
+        w = static_cast<int>(shape[shape.size() - 1]);
+    }
+    const size_t plane = static_cast<size_t>(h) * static_cast<size_t>(w);
+    const size_t n_views = plane > 0 ? data.size() / plane : 1;
+    const size_t v = (n_views > 1) ? view : 0;
+    if ((v + 1) * plane > data.size()) {
+        throw std::runtime_error("Output view " + std::to_string(view) + " out of range");
+    }
+    cv::Mat mat(h, w, CV_32F);
+    const float *src = data.data() + v * plane;
+    std::copy(src, src + plane, mat.ptr<float>());
+    return mat;
+}
+
+} // namespace
+
 DepthResult DepthAnything3Inference::postprocess_outputs(int out_h, int out_w, int orig_h, int orig_w,
                                                           bool upscale_to_orig) {
     if (output_data_cache_.empty()) {
@@ -144,6 +205,72 @@ DepthResult DepthAnything3Inference::postprocess_outputs(int out_h, int out_w, i
     }
 
     return result;
+}
+
+DepthResult DepthAnything3Inference::postprocess_view(size_t view, int out_h, int out_w, int orig_h, int orig_w,
+                                                      bool upscale_to_orig) {
+    if (output_data_cache_.empty()) {
+        throw std::runtime_error("No outputs cached — call run_inference_batch() first");
+    }
+    DepthResult result;
+    result.orig_h = orig_h;
+    result.orig_w = orig_w;
+
+    cv::Mat depth_mat = extract_view_mat(output_data_cache_[0], output_shapes_cache_[0], view, out_h, out_w);
+    if (upscale_to_orig && (depth_mat.rows != orig_h || depth_mat.cols != orig_w)) {
+        cv::resize(depth_mat, depth_mat, cv::Size(orig_w, orig_h), 0, 0, cv::INTER_LINEAR);
+    }
+    result.depth = std::move(depth_mat);
+
+    if (config_.output_conf && output_data_cache_.size() >= 2) {
+        cv::Mat conf_mat = extract_view_mat(output_data_cache_[1], output_shapes_cache_[1], view, out_h, out_w);
+        if (upscale_to_orig && (conf_mat.rows != orig_h || conf_mat.cols != orig_w)) {
+            cv::resize(conf_mat, conf_mat, cv::Size(orig_w, orig_h), 0, 0, cv::INTER_LINEAR);
+        }
+        result.conf = std::move(conf_mat);
+    }
+    return result;
+}
+
+bool DepthAnything3Inference::get_pose_view(size_t view, std::array<float, 12> &pose,
+                                            std::array<float, 4> &intrinsics) const {
+    pose = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    bool found_pose = false;
+
+    for (size_t i = 0; i < output_shapes_cache_.size(); ++i) {
+        const auto &shape = output_shapes_cache_[i];
+        if (shape.size() < 2 || shape[shape.size() - 2] != 3 || shape[shape.size() - 1] != 4) {
+            continue;
+        }
+        // Extrinsics [..,3,4]: leading dims are batch/view dims.
+        const auto &data = output_data_cache_[i];
+        const size_t n = data.size() / 12;
+        if (view < n && data.size() >= (view + 1) * 12) {
+            for (size_t k = 0; k < 12; ++k) {
+                pose[k] = data[view * 12 + k];
+            }
+            found_pose = true;
+        }
+        break; // first [..,3,4] head wins
+    }
+
+    for (size_t i = 0; i < output_shapes_cache_.size(); ++i) {
+        const auto &shape = output_shapes_cache_[i];
+        if (shape.size() < 2 || shape[shape.size() - 2] != 3 || shape[shape.size() - 1] != 3) {
+            continue;
+        }
+        // Intrinsics K = [fx 0 cx; 0 fy cy; 0 0 1] -> decompose properly
+        // (the old main.cpp path copied the first 4 floats, yielding fy=0).
+        const auto &data = output_data_cache_[i];
+        const size_t n = data.size() / 9;
+        if (view < n && data.size() >= (view + 1) * 9) {
+            const float *k = data.data() + view * 9;
+            intrinsics = {k[0], k[4], k[2], k[5]};
+        }
+        break; // first [..,3,3] head wins
+    }
+
+    return found_pose;
 }
 
 cv::Mat DepthAnything3Inference::colorize_depth(const cv::Mat &depth_map) {

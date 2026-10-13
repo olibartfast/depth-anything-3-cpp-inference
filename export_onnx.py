@@ -298,10 +298,14 @@ class AnyViewWrapper(torch.nn.Module):
         if self.task in ("pose", "reconstruction", "gaussian"):
             extr = self._pick(output, "extrinsics", "pose", "poses")
             if extr is not None:
+                if extr.ndim == 4 and extr.shape[0] == 1:
+                    extr = extr.squeeze(0)  # [1,N,3,4] -> [N,3,4]
                 outs.append(extr)
                 names.append("extrinsics")
             intr = self._pick(output, "intrinsics", "K", "focal")
             if intr is not None:
+                if intr.ndim == 4 and intr.shape[0] == 1:
+                    intr = intr.squeeze(0)  # [1,N,3,3] -> [N,3,3]
                 outs.append(intr)
                 names.append("intrinsics")
 
@@ -348,6 +352,44 @@ def _resolve_model_id(model_name: str) -> str:
     return f"depth-anything/{model_name.upper()}"
 
 
+def _load_model(model_dir: Path, device: torch.device):
+    """Load a model from a Hub id/dir, falling back to manual safetensors load.
+
+    `DepthAnything3.from_pretrained` (HF Hub mixin) expects a
+    `pytorch_model.bin`, but upstream repos ship `model.safetensors` +
+    `config.json` (with a `model_name` preset key). When the mixin path fails
+    and the directory contains those two files, build the preset architecture
+    directly and load the safetensors (strict=False; aux heads may be absent).
+    """
+    from depth_anything_3.api import DepthAnything3
+
+    try:
+        model = DepthAnything3.from_pretrained(str(model_dir))
+        return model.to(device=device)
+    except Exception as first_exc:  # noqa: BLE001
+        cfg_path = Path(model_dir) / "config.json"
+        st_path = Path(model_dir) / "model.safetensors"
+        if not (cfg_path.is_file() and st_path.is_file()):
+            raise first_exc
+        import json
+
+        preset = json.loads(cfg_path.read_text()).get("model_name")
+        if not preset:
+            raise first_exc
+        try:
+            from safetensors.torch import load_file
+        except ImportError:
+            raise first_exc
+        print(f"from_pretrained failed ({first_exc}); falling back to preset "
+              f"'{preset}' + manual safetensors load.")
+        model = DepthAnything3(preset)
+        sd = load_file(str(st_path), device="cpu")
+        missing, unexpected = model.load_state_dict(sd, strict=False)
+        if missing or unexpected:
+            print(f"safetensors load: {len(missing)} missing, {len(unexpected)} unexpected keys.")
+        return model.to(device=device)
+
+
 def _warn_missing_heads(task: str, output_names: list) -> None:
     """Warn when the loaded checkpoint lacks heads the requested task wants."""
     if task == "pose" and ("extrinsics" not in output_names or "intrinsics" not in output_names):
@@ -376,11 +418,17 @@ def main() -> int:
     args = parse_args()
 
     try:
-        from depth_anything_3.api import DepthAnything3
-    except ImportError:
+        try:
+            from depth_anything_3 import DepthAnything3
+        except ImportError:
+            # Upstream ships src/depth_anything_3/ without __init__.py
+            # (namespace package), so the top-level re-export may not
+            # resolve; the class always lives in depth_anything_3.api.
+            from depth_anything_3.api import DepthAnything3
+    except Exception as exc:  # noqa: BLE001
         print(
-            "ERROR: Cannot import depth_anything_3. "
-            "Install it with:  pip install -e /path/to/Depth-Anything-3",
+            "ERROR: Cannot import depth_anything_3 "
+            f"({exc}). Install it with:  pip install -e /path/to/Depth-Anything-3",
             file=sys.stderr,
         )
         return 1
@@ -389,11 +437,10 @@ def main() -> int:
     print(f"Loading model on {device}…")
 
     if args.model_dir is not None:
-        model = DepthAnything3.from_pretrained(str(args.model_dir))
+        model = _load_model(args.model_dir, device)
     else:
         model = DepthAnything3.from_pretrained(_resolve_model_id(args.model_name))
-
-    model = model.to(device=device)
+        model = model.to(device=device)
     model.eval()
 
     _patch_cartesian_prod_for_onnx()

@@ -116,47 +116,8 @@ static void apply_metric_scaling(cv::Mat &depth, float focal_px, bool already_me
 // (src/depth_anything3_inference.hpp) so unit tests exercise the real code.
 using tasks::FrameData;
 
-// Locate the first cached model output whose trailing dimensions are exactly
-// (rows, cols) — used to find a [3,4] extrinsics or [3,3] intrinsics head.
-// Shape-heuristic (not name-based): the backend interface exposes output
-// indices + shapes, not names (see requirements R-4 note).
-static const std::vector<float> *find_matrix_output(const DepthAnything3Inference &inference, int64_t rows,
-                                                    int64_t cols) {
-    const auto &shapes = inference.get_raw_output_shapes();
-    const auto &data = inference.get_raw_outputs();
-    for (std::size_t i = 0; i < shapes.size(); ++i) {
-        const auto &shape = shapes[i];
-        if (shape.size() >= 2 && shape[shape.size() - 2] == rows && shape[shape.size() - 1] == cols) {
-            return &data[i];
-        }
-    }
-    return nullptr;
-}
-
-// Populate @p pose (always; identity fallback) and @p intrinsics (overridden
-// only when the model exposes them) from the cached pose-head outputs.
-static bool apply_model_pose(const DepthAnything3Inference &inference, std::array<float, 12> &pose,
-                             std::array<float, 4> &intrinsics) {
-    pose = {1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
-
-    bool found_pose = false;
-    const std::vector<float> *extrinsics = find_matrix_output(inference, 3, 4);
-    if (extrinsics != nullptr && extrinsics->size() >= 12) {
-        for (std::size_t k = 0; k < 12; ++k) {
-            pose[k] = (*extrinsics)[k];
-        }
-        found_pose = true;
-    }
-
-    const std::vector<float> *kin = find_matrix_output(inference, 3, 3);
-    if (kin != nullptr && kin->size() >= 4) {
-        for (std::size_t k = 0; k < 4; ++k) {
-            intrinsics[k] = (*kin)[k];
-        }
-    }
-
-    return found_pose;
-}
+// Pose extraction lives on the inference class (get_pose_view) so unit tests
+// exercise the production code path.
 
 // ---------------------------------------------------------------------------
 // CLI options & usage
@@ -175,10 +136,12 @@ struct Options {
     bool upscale_to_orig{true};
     int process_res{504};
     std::filesystem::path dump_raw;
+    int views_per_batch{0}; // 0 = auto (trace N for static models, streaming single otherwise)
+    int ply_stride{1};      // pixel subsampling for PLY outputs (F-2)
 
     /// True when metric scaling must be skipped: either the user passed
-    /// --already-metric, or the camera preset implies meters on its own (the
-    /// Nested-family `base` checkpoint). An explicit --focal always wins.
+    /// --already-metric, or the camera preset implies meters on its own
+    /// (`base` preset). An explicit --focal always wins.
     [[nodiscard]] bool skip_metric_scaling() const noexcept {
         return already_metric || camera_implies_already_metric(camera, focal_set);
     }
@@ -210,6 +173,9 @@ static void print_usage(std::ostream &os, const char *program) {
     os << "  --no-upscale      Keep depth map at model output resolution (no resize)\n";
     os << "  --process-res N   Resize the longest side to N before inference (default: 504)\n";
     os << "  --dump-raw PATH   Write the raw float32 depth map to PATH as a .npy file\n";
+    os << "  --views-per-batch K Stream views in chunks of K (default: trace N for\n";
+    os << "                    static batch models, frame-by-frame otherwise)\n";
+    os << "  --ply-stride S    Subsample PLY outputs every S-th pixel (default: 1)\n";
     os << "                    (multi-view: PATH is a directory or filename prefix)\n";
     os << "  --help            Show this help and exit\n";
     os << "\n";
@@ -245,6 +211,135 @@ static void print_usage(std::ostream &os, const char *program) {
 // Inference & output
 // ---------------------------------------------------------------------------
 
+// File outputs for one postprocessed result (depth jpg, metric/raw npy, conf).
+static void write_frame_files(const DepthResult &result, const Options &opts,
+                              const std::filesystem::path &depth_out, const std::filesystem::path &raw_out,
+                              const std::filesystem::path &metric_out, const std::filesystem::path &conf_out) {
+    if (!depth_out.empty()) {
+        const cv::Mat depth_vis = DepthAnything3Inference::colorize_depth(result.depth);
+        if (const auto saved = DepthAnything3Inference::save_output_image(depth_vis, depth_out)) {
+            std::cout << "Depth map saved to: " << saved->string() << std::endl;
+        } else {
+            throw std::runtime_error("Could not save depth map to " + depth_out.string());
+        }
+    }
+
+    double min_depth = 0.0;
+    double max_depth = 0.0;
+    cv::minMaxLoc(result.depth, &min_depth, &max_depth);
+    std::cout << "Depth range: [" << min_depth << ", " << max_depth << "]" << std::endl;
+
+    if (!metric_out.empty()) {
+        if (write_npy_float32(result.depth, metric_out)) {
+            std::cout << "Metric depth map saved to: " << metric_out.string() << std::endl;
+        } else {
+            throw std::runtime_error("Could not save metric depth map to " + metric_out.string());
+        }
+    }
+
+    if (!raw_out.empty()) {
+        if (write_npy_float32(result.depth, raw_out)) {
+            std::cout << "Raw depth map saved to: " << raw_out.string() << std::endl;
+        } else {
+            throw std::runtime_error("Could not save raw depth map to " + raw_out.string());
+        }
+    }
+
+    if (opts.output_conf && !conf_out.empty()) {
+        if (!result.conf.empty()) {
+            const cv::Mat conf_vis = DepthAnything3Inference::colorize_conf(result.conf);
+            if (const auto saved = DepthAnything3Inference::save_output_image(conf_vis, conf_out)) {
+                std::cout << "Confidence map saved to: " << saved->string() << std::endl;
+            }
+        } else {
+            std::cout << "Note: Model did not produce a confidence output." << std::endl;
+        }
+    }
+}
+
+// Fill per-view task data: model pose when the ONNX exposes the head
+// (identity fallback), default pinhole intrinsics, colour image for PLY tasks.
+static void fill_frame_data(const DepthAnything3Inference &inference, DepthResult &result,
+                            const std::filesystem::path &image_path, const Options &opts, size_t view,
+                            FrameData *frame_out) {
+    if (frame_out == nullptr) {
+        return;
+    }
+    frame_out->depth = result.depth;
+    const int h = result.depth.rows;
+    const int w = result.depth.cols;
+    const float focal = opts.focal_set ? opts.focal : tasks::default_focal(w);
+    frame_out->intrinsics = {focal, focal, static_cast<float>(w) / 2.0f, static_cast<float>(h) / 2.0f};
+    frame_out->pose_from_model = inference.get_pose_view(view, frame_out->pose, frame_out->intrinsics);
+
+    if (opts.task == TaskType::reconstruction || opts.task == TaskType::gaussian) {
+        frame_out->image_bgr = cv::imread(image_path.string(), cv::IMREAD_COLOR);
+    }
+}
+
+// Process one N-view chunk through a static batch model ([N,3,H,W] in,
+// [N,H,W] depth/conf + [N,3,4]/[N,3,3] pose heads out). Preprocessed frames
+// must match the traced spatial dims exactly (F-1 shape-lock); RAM stays
+// bounded by the chunk (streaming pattern for long sequences).
+static void process_chunk(DepthAnything3Inference &inference, const std::vector<std::filesystem::path> &chunk,
+                          const Options &opts, int trace_h, int trace_w, size_t base_index,
+                          std::vector<FrameData> *accumulate) {
+    std::vector<std::vector<float>> tensors;
+    std::vector<int> orig_h(chunk.size());
+    std::vector<int> orig_w(chunk.size());
+    tensors.reserve(chunk.size());
+    for (size_t i = 0; i < chunk.size(); ++i) {
+        int oh = 0;
+        int ow = 0;
+        int out_h = 0;
+        int out_w = 0;
+        tensors.push_back(inference.preprocess_image(chunk[i], oh, ow, out_h, out_w));
+        if (out_h != trace_h || out_w != trace_w) {
+            throw std::runtime_error(
+                "Static batch model expects " + std::to_string(trace_h) + "x" + std::to_string(trace_w) +
+                " inputs (trace-shape-locked, F-1), but got " + std::to_string(out_h) + "x" + std::to_string(out_w) +
+                ". Pass --process-res " + std::to_string(trace_h) + " with square inputs, or export --fixed-size.");
+        }
+        orig_h[i] = oh;
+        orig_w[i] = ow;
+    }
+
+    const auto t0 = std::chrono::steady_clock::now();
+    inference.run_inference_batch(tensors, trace_h, trace_w);
+    const auto t1 = std::chrono::steady_clock::now();
+    std::cout << "Timing: infer chunk[" << chunk.size() << "] "
+              << std::chrono::duration<double, std::milli>(t1 - t0).count() << " ms" << std::endl;
+
+    for (size_t i = 0; i < chunk.size(); ++i) {
+        DepthResult result = inference.postprocess_view(i, trace_h, trace_w, orig_h[i], orig_w[i], opts.upscale_to_orig);
+        if (opts.task == TaskType::metric) {
+            apply_metric_scaling(result.depth, opts.focal, opts.skip_metric_scaling());
+        }
+        const int index = static_cast<int>(base_index + i);
+        std::filesystem::path depth_out =
+            join_output(opts.output_dir, append_index("output_depth.jpg", index, ".jpg").string());
+        std::filesystem::path raw_out;
+        if (!opts.dump_raw.empty()) {
+            raw_out = raw_frame_path(opts.dump_raw, index);
+        }
+        std::filesystem::path metric_out;
+        if (opts.task == TaskType::metric) {
+            metric_out = join_output(opts.output_dir, append_index("output_metric.npy", index, ".npy").string());
+        }
+        std::filesystem::path conf_out;
+        if (opts.output_conf) {
+            conf_out = join_output(opts.output_dir, append_index("output_conf.jpg", index, ".jpg").string());
+        }
+        std::cout << "Input image: " << chunk[i].string() << std::endl;
+        write_frame_files(result, opts, depth_out, raw_out, metric_out, conf_out);
+        if (accumulate != nullptr) {
+            FrameData frame;
+            fill_frame_data(inference, result, chunk[i], opts, i, &frame);
+            accumulate->push_back(std::move(frame));
+        }
+    }
+}
+
 // Run one image through the model and write whatever per-frame outputs are
 // requested. Empty output paths are skipped. When @p frame_out is non-null the
 // postprocessed depth, pose, intrinsics and (for PLY tasks) the original image
@@ -274,66 +369,8 @@ static void process_frame(DepthAnything3Inference &inference, const std::filesys
 
     const double infer_ms = std::chrono::duration<double, std::milli>(t_infer_end - t_infer_start).count();
     std::cout << "Timing: infer " << infer_ms << " ms (H2D + GPU + D2H)" << std::endl;
-
-    // Colorized depth map
-    if (!depth_out.empty()) {
-        const cv::Mat depth_vis = DepthAnything3Inference::colorize_depth(result.depth);
-        if (const auto saved = DepthAnything3Inference::save_output_image(depth_vis, depth_out)) {
-            std::cout << "Depth map saved to: " << saved->string() << std::endl;
-        } else {
-            throw std::runtime_error("Could not save depth map to " + depth_out.string());
-        }
-    }
-
-    double min_depth = 0.0;
-    double max_depth = 0.0;
-    cv::minMaxLoc(result.depth, &min_depth, &max_depth);
-    std::cout << "Depth range: [" << min_depth << ", " << max_depth << "]" << std::endl;
-
-    // Metric .npy (float32 meters)
-    if (!metric_out.empty()) {
-        if (write_npy_float32(result.depth, metric_out)) {
-            std::cout << "Metric depth map saved to: " << metric_out.string() << std::endl;
-        } else {
-            throw std::runtime_error("Could not save metric depth map to " + metric_out.string());
-        }
-    }
-
-    // Raw .npy dump
-    if (!raw_out.empty()) {
-        if (write_npy_float32(result.depth, raw_out)) {
-            std::cout << "Raw depth map saved to: " << raw_out.string() << std::endl;
-        } else {
-            throw std::runtime_error("Could not save raw depth map to " + raw_out.string());
-        }
-    }
-
-    // Optional confidence map
-    if (opts.output_conf && !conf_out.empty()) {
-        if (!result.conf.empty()) {
-            const cv::Mat conf_vis = DepthAnything3Inference::colorize_conf(result.conf);
-            if (const auto saved = DepthAnything3Inference::save_output_image(conf_vis, conf_out)) {
-                std::cout << "Confidence map saved to: " << saved->string() << std::endl;
-            }
-        } else {
-            std::cout << "Note: Model did not produce a confidence output." << std::endl;
-        }
-    }
-
-    if (frame_out != nullptr) {
-        frame_out->depth = result.depth;
-        const int h = result.depth.rows;
-        const int w = result.depth.cols;
-        // Default pinhole intrinsics: --focal when passed, else 1.2*W (R-5).
-        const float focal = opts.focal_set ? opts.focal : tasks::default_focal(w);
-        frame_out->intrinsics = {focal, focal, static_cast<float>(w) / 2.0f, static_cast<float>(h) / 2.0f};
-        // Identity pose unless the loaded ONNX exposes a pose head.
-        frame_out->pose_from_model = apply_model_pose(inference, frame_out->pose, frame_out->intrinsics);
-
-        if (opts.task == TaskType::reconstruction || opts.task == TaskType::gaussian) {
-            frame_out->image_bgr = cv::imread(image_path.string(), cv::IMREAD_COLOR);
-        }
-    }
+    write_frame_files(result, opts, depth_out, raw_out, metric_out, conf_out);
+    fill_frame_data(inference, result, image_path, opts, 0, frame_out);
 }
 
 // Emit the accumulated file-based task outputs once every frame is processed.
@@ -373,13 +410,13 @@ static void write_task_outputs(const Options &opts, const std::vector<FrameData>
         }
     } else if (opts.task == TaskType::reconstruction) {
         const std::filesystem::path cloud_path = join_output(opts.output_dir, "output_cloud.ply");
-        if (!tasks::save_point_cloud_ply(cloud_path, frames)) {
+        if (!tasks::save_point_cloud_ply(cloud_path, frames, opts.ply_stride)) {
             throw std::runtime_error("Could not write point cloud to " + cloud_path.string());
         }
         std::cout << "Point cloud saved to: " << cloud_path.string() << std::endl;
     } else if (opts.task == TaskType::gaussian) {
         const std::filesystem::path gaussians_path = join_output(opts.output_dir, "output_gaussians.ply");
-        if (!tasks::save_gaussians_ply(gaussians_path, frames)) {
+        if (!tasks::save_gaussians_ply(gaussians_path, frames, opts.ply_stride)) {
             throw std::runtime_error("Could not write Gaussians to " + gaussians_path.string());
         }
         std::cout << "Gaussians saved to: " << gaussians_path.string() << std::endl;
@@ -453,6 +490,26 @@ int main(int argc, const char *argv[]) {
                 }
             } catch (const std::exception &e) {
                 std::cerr << "Invalid value for --process-res: " << e.what() << std::endl;
+                return 1;
+            }
+        } else if (arg == "--views-per-batch" && i + 1 < args.size()) {
+            try {
+                opts.views_per_batch = std::stoi(args[++i]);
+                if (opts.views_per_batch <= 0) {
+                    throw std::invalid_argument("views_per_batch must be positive");
+                }
+            } catch (const std::exception &e) {
+                std::cerr << "Invalid value for --views-per-batch: " << e.what() << std::endl;
+                return 1;
+            }
+        } else if (arg == "--ply-stride" && i + 1 < args.size()) {
+            try {
+                opts.ply_stride = std::stoi(args[++i]);
+                if (opts.ply_stride <= 0) {
+                    throw std::invalid_argument("ply_stride must be positive");
+                }
+            } catch (const std::exception &e) {
+                std::cerr << "Invalid value for --ply-stride: " << e.what() << std::endl;
                 return 1;
             }
         } else if (!arg.empty() && arg[0] == '-') {
@@ -534,9 +591,26 @@ int main(int argc, const char *argv[]) {
                                        opts.task == TaskType::gaussian;
         std::vector<FrameData> frames;
 
+        // Batch-model detection: static [N,3,H,W] input (dynamo any-view
+        // exports). Dynamic mono graphs report [1,3,0,0].
+        const std::vector<int64_t> model_shape = inference.get_model_input_shape();
+        const bool is_batch_model =
+            model_shape.size() == 4 && model_shape[0] > 1 && model_shape[2] > 0 && model_shape[3] > 0;
+        const int trace_n = is_batch_model ? static_cast<int>(model_shape[0]) : 1;
+        const int trace_h = is_batch_model ? static_cast<int>(model_shape[2]) : 0;
+        const int trace_w = is_batch_model ? static_cast<int>(model_shape[3]) : 0;
+        if (is_batch_model) {
+            std::cout << "Batch model: " << trace_n << " view(s) per batch at " << trace_h << "x" << trace_w
+                      << " (static export)" << std::endl;
+        }
+        if (opts.views_per_batch > 0 && is_batch_model && opts.views_per_batch != trace_n) {
+            throw std::runtime_error("--views-per-batch " + std::to_string(opts.views_per_batch) +
+                                     " does not match the static model batch of " + std::to_string(trace_n));
+        }
+
         if (input_is_dir) {
             // Multi-view / directory mode: one indexed output per frame.
-            if (opts.task == TaskType::multiview) {
+            if (opts.task == TaskType::multiview && !is_batch_model) {
                 std::cerr << "Warning: multi-view per-frame depth is a baseline; spatially consistent fusion "
                              "requires an any-view ONNX export (R-7)."
                           << std::endl;
@@ -548,6 +622,27 @@ int main(int argc, const char *argv[]) {
             }
             std::cout << "Found " << inputs.size() << " image(s) in " << input.string() << std::endl;
 
+            if (is_batch_model) {
+                // True N-view path: stream the directory in trace-N chunks so
+                // RAM stays bounded for long sequences (R-3). All tasks share
+                // this path; per-view outputs are identical in layout.
+                if (inputs.size() % static_cast<size_t>(trace_n) != 0) {
+                    throw std::runtime_error("Static batch model takes " + std::to_string(trace_n) +
+                                             " views per batch, but the directory holds " +
+                                             std::to_string(inputs.size()) +
+                                             " images (not a multiple). Pad or trim the directory.");
+                }
+                std::vector<FrameData> *accumulate = accumulate_frames ? &frames : nullptr;
+                for (std::size_t base = 0; base < inputs.size(); base += static_cast<size_t>(trace_n)) {
+                    const auto chunk_begin = inputs.begin() + static_cast<ptrdiff_t>(base);
+                    const auto chunk_end =
+                        inputs.begin() + static_cast<ptrdiff_t>(base + static_cast<size_t>(trace_n));
+                    std::vector<std::filesystem::path> chunk(chunk_begin, chunk_end);
+                    process_chunk(inference, chunk, opts, trace_h, trace_w, base, accumulate);
+                }
+            }
+
+            if (!is_batch_model) {
             for (std::size_t i = 0; i < inputs.size(); ++i) {
                 const int index = static_cast<int>(i);
                 const std::filesystem::path depth_out =
@@ -575,7 +670,13 @@ int main(int argc, const char *argv[]) {
                 }
                 process_frame(inference, inputs[i], opts, depth_out, raw_out, metric_out, conf_out, frame_out);
             }
+            } // !is_batch_model
         } else {
+            if (is_batch_model) {
+                throw std::runtime_error("Static batch model expects " + std::to_string(trace_n) +
+                                         " views; pass a directory with a multiple of " +
+                                         std::to_string(trace_n) + " images.");
+            }
             // Single-image mode.
             std::filesystem::path metric_out;
             if (opts.task == TaskType::metric) {

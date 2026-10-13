@@ -12,8 +12,8 @@ CUDA_ARCH cheat-sheet (property of box): T4 `75`, A10G/A4000 `86`, L4/L40S `89`,
 ## Path A — Colab (do first, cheap arch cover)
 
 1. Export Small at home (free): `python export_onnx.py --model-name da3-small --output da3-small.onnx` (ORT smoke) + `python export_onnx.py --model-name da3-small --output da3-small-fixed.onnx --fixed-size` (TRT) + square `test504.png` (TRT engine is fixed-shape).
-2. Open `scripts/colab/gpu_gate.ipynb` in Colab → GPU T4 → Run all. It installs CUDA 13.3 + pre-stages TRT 11.2.1.2, builds ORT-CPU, runs `ctest -R UnitTests`, runs `inference_app` (ORT on test.jpg, TRT build+infer on test504.png).
-3. Copy `output_depth.jpg` + `output_depth_trt.jpg` + console depth-ranges + `nvidia-smi` header into `evidence/<date>-colab-t4/`. Disconnect runtime when done.
+2. Open `docs/colab-inference.ipynb` in Colab → GPU T4 → Run all (Path A, current: builds this repo, exports DA3-SMALL mono + any-view pose ONNX, runs `--task mono` + `--task pose`, prints poses/intrinsics). Legacy alternative: `scripts/colab/gpu_gate.ipynb` (TRT 11.2.1.2 pre-stage + ORT smoke on test images).
+3. Copy `output_depth.jpg` + `output_depth_trt.jpg` + console depth-ranges + `nvidia-smi` header into `evidence/<date>-colab-t4/`. For the new notebook instead paste back: `ctest` result, both export logs (output names), both inference logs, `poses.txt`/`intrinsics.txt`. Disconnect runtime when done.
 4. Limits (record as UNRUN not FAIL): `compute-sanitizer` under forward-compat may be UNRUN, pip OpenCV not NGC build.
 
 ## Path B — Brev full gate

@@ -223,6 +223,38 @@ cmake --build build --parallel
 
 The output depth colormap is saved as **`output_depth.jpg`** in the current directory.
 
+### Native Task Selection (`--task`)
+
+```bash
+# Monocular relative depth (default — previous commands keep working)
+./build/inference_app model.onnx image.jpg --task mono
+# Metric depth in meters (DA3METRIC-LARGE; Nested is already meters: add --already-metric)
+./build/inference_app model.onnx image.jpg --task metric --focal 500
+# Multi-view: pass a directory (sorted *.jpg/*.jpeg/*.png → output_depth_%03d.jpg)
+./build/inference_app model.onnx ./views/ --task multiview
+# Pose: poses.txt (N×12 w2c) + intrinsics.txt (N×4 fx fy cx cy)
+./build/inference_app model.onnx ./views/ --task pose [--use-ray-pose]
+# Dense reconstruction → output_cloud.ply (ASCII, x y z r g b)
+./build/inference_app model.onnx ./views/ --task reconstruction
+# 3D Gaussians → output_gaussians.ply (depth-lifted placeholder; full head needs gsplat export)
+./build/inference_app model.onnx ./views/ --task gaussian
+```
+
+| `--task` | Outputs | Best checkpoints |
+|----------|---------|------------------|
+| `mono` | `output_depth.jpg` | DA3-SMALL / BASE / LARGE / GIANT |
+| `metric` | `output_depth.jpg` + `output_metric.npy` | DA3METRIC-LARGE |
+| `multiview` | `output_depth_%03d.jpg` per frame | DA3-LARGE / GIANT |
+| `pose` | `poses.txt` + `intrinsics.txt` | DA3-LARGE / GIANT (not METRIC) |
+| `reconstruction` | `output_cloud.ply` | DA3-GIANT; NESTED-GIANT-LARGE for metric |
+| `gaussian` | `output_gaussians.ply` (placeholder) | DA3-LARGE / GIANT + Gaussian head |
+
+Notes: per-frame multi-view is a baseline — spatially consistent fusion needs an
+any-view ONNX (`python export_onnx.py --task multiview|pose|… --use-ray-pose`).
+Tasks whose head the loaded ONNX lacks degrade gracefully (identity poses,
+depth-lifted cloud/gaussians) with a warning, never a silent wrong result.
+License: Small/Base/Mono/Metric Apache-2.0; Large/Giant/Nested CC BY-NC 4.0 (prefer `-1.1`).
+
 ### With Confidence Map
 
 ```bash
@@ -246,16 +278,22 @@ Saves `output_depth.jpg` and `output_conf.jpg`.
 ### Full Usage
 
 ```
-Usage: ./build/inference_app <path_to_model> <path_to_image> [--conf] [--no-upscale] [--process-res N]
+Usage: ./build/inference_app <path_to_model> <path_to_image> [--conf] [--no-upscale] [--process-res N] [--task TASK] [--focal PX] [--input-dir DIR] [--output-dir DIR] [--already-metric] [--use-ray-pose]
 
 Arguments:
   path_to_model   ONNX model (.onnx) or TensorRT engine (.engine / .trt)
-  path_to_image   Input image (JPG, PNG, ...)
+  path_to_image   Input image (JPG, PNG, ...) or directory of images
 
 Options:
   --conf          Also save the confidence map as output_conf.jpg
   --no-upscale    Keep depth map at model output resolution (no resize to original)
   --process-res N Resize the longest side to N before inference (default: 504)
+  --task TASK     Native DA3 task: mono (default), metric, multiview, pose, reconstruction, gaussian
+  --focal PX      Focal length in pixels for --task metric (default: 500)
+  --input-dir DIR Directory of input images (overrides positional image)
+  --output-dir DIR Directory for output files (default: current directory)
+  --already-metric Depth already in meters (Nested); skip focal*net/300 scaling
+  --use-ray-pose  Ray-based pose estimation for --task pose (needs pose-capable export)
 ```
 
 ---

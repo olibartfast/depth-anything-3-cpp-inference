@@ -15,7 +15,7 @@ Status values: `idea` · `planned` · `in progress` · `done` · `blocked` · `d
 - Spec: `specs/2026-10-11-da3-upstream-alignment/` (R-5) or follow-on slice
 
 ## Phase 3 — Any-view design spike (deferred)
-- Status: deferred
+- Status: in progress (thin front-end slice: `--task` CLI landed 2026-10-12 — mono/metric fully wired, multiview per-frame baseline loop, pose/reconstruction/gaussian standard-file outputs with graceful degradation; true N-view consistent fusion, streaming, glb/npz/3DGS-video still deferred)
 - Outcome: design note for N-view tensors, extrinsics/intrinsics, `use_ray_pose`, `ref_view_strategy`, streaming, glb/ply export; no implementation
 - Proves: whether C++ any-view is a thin next slice or new project
 - Spec: future dated packet

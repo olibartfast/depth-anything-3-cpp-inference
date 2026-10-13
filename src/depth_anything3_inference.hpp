@@ -1,11 +1,18 @@
 #pragma once
 #include "backends/inference_backend.hpp"
 
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <memory>
 #include <opencv2/opencv.hpp>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -13,9 +20,331 @@
 using da3::backend::create_backend;
 using da3::backend::InferenceBackend;
 
+/// Native Depth Anything 3 tasks selectable with `--task`.
+///
+/// These mirror the upstream `da3` CLI modes. Only `mono`/`metric` have
+/// complete single-graph support in this binary today; the remaining tasks are
+/// accepted by the CLI and degrade to depth-only output (see requirements D-4).
+enum class TaskType { mono, metric, multiview, pose, reconstruction, gaussian };
+
+/// Parse a `--task` argument into a TaskType.
+/// @param name  Raw task name; an empty string maps to TaskType::mono.
+/// @throws std::runtime_error if the name is not a recognized task.
+[[nodiscard]] inline TaskType parse_task(const std::string &name) {
+    if (name.empty() || name == "mono") {
+        return TaskType::mono;
+    }
+    if (name == "metric") {
+        return TaskType::metric;
+    }
+    if (name == "multiview") {
+        return TaskType::multiview;
+    }
+    if (name == "pose") {
+        return TaskType::pose;
+    }
+    if (name == "reconstruction") {
+        return TaskType::reconstruction;
+    }
+    if (name == "gaussian") {
+        return TaskType::gaussian;
+    }
+    throw std::runtime_error("Unknown task: '" + name +
+                             "' (expected one of: mono, metric, multiview, pose, reconstruction, gaussian)");
+}
+
+/// Canonical, lowercase CLI name for a TaskType (inverse of parse_task).
+[[nodiscard]] inline std::string task_to_string(TaskType task) {
+    switch (task) {
+    case TaskType::mono:
+        return "mono";
+    case TaskType::metric:
+        return "metric";
+    case TaskType::multiview:
+        return "multiview";
+    case TaskType::pose:
+        return "pose";
+    case TaskType::reconstruction:
+        return "reconstruction";
+    case TaskType::gaussian:
+        return "gaussian";
+    }
+    return "mono";
+}
+
+/// Recommended upstream checkpoints for a task (surfaced in `--help`).
+[[nodiscard]] inline std::string recommended_checkpoint(TaskType task) {
+    switch (task) {
+    case TaskType::mono:
+        return "DA3-SMALL/BASE/LARGE/GIANT";
+    case TaskType::metric:
+        return "DA3METRIC-LARGE";
+    case TaskType::multiview:
+        return "DA3-LARGE/GIANT";
+    case TaskType::pose:
+        return "DA3-LARGE/GIANT (not METRIC)";
+    case TaskType::reconstruction:
+        return "DA3-GIANT; NESTED-GIANT-LARGE for metric";
+    case TaskType::gaussian:
+        return "DA3-LARGE/GIANT + Gaussian head";
+    }
+    return "";
+}
+
+/// Collect image paths (*.jpg, *.jpeg, *.png — case-insensitive) from a
+/// directory, sorted lexicographically for deterministic multi-view ordering.
+/// Returns an empty vector when @p dir is not a readable directory.
+[[nodiscard]] inline std::vector<std::filesystem::path> collect_image_paths(const std::filesystem::path &dir) {
+    std::vector<std::filesystem::path> paths;
+    if (!std::filesystem::is_directory(dir)) {
+        return paths;
+    }
+    for (const auto &entry : std::filesystem::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+        std::string ext = entry.path().extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (ext == ".jpg" || ext == ".jpeg" || ext == ".png") {
+            paths.push_back(entry.path());
+        }
+    }
+    std::sort(paths.begin(), paths.end());
+    return paths;
+}
+
+/// File-based outputs for the pose / reconstruction / gaussian tasks.
+///
+/// Lives in the header (not main.cpp) so unit tests exercise the real writers.
+/// Pose heads are matched by trailing shape because the backend interface
+/// exposes output indices + shapes, not names (see find_matrix_output in
+/// main.cpp): [3,4] trailing dims = extrinsics, [3,3] = intrinsics.
+namespace tasks {
+
+/// One processed frame accumulated for multi-frame task artifacts.
+struct FrameData {
+    cv::Mat depth;                     // postprocessed depth (metric-scaled when applicable)
+    cv::Mat image_bgr;                 // original BGR image (colour source for PLY outputs)
+    std::array<float, 12> pose{};      // 3x4 world-to-camera, row-major: r11 r12 r13 tx r21 …
+    std::array<float, 4> intrinsics{}; // fx fy cx cy
+    bool pose_from_model{false};       // true when the ONNX exposed an extrinsics head
+};
+
+/// Default pinhole focal length (px) when --focal is not passed: 1.2 * width.
+[[nodiscard]] inline float default_focal(int width) noexcept {
+    return 1.2f * static_cast<float>(width);
+}
+
+/// Back-project a depth pixel with the pinhole model and transform by the
+/// frame pose: X=(u-cx)*Z/fx, Y=(v-cy)*Z/fy then p_world = R * p + t.
+inline void backproject_point(const FrameData &frame, int u, int v, float z, float &out_x, float &out_y,
+                              float &out_z) {
+    const float fx = frame.intrinsics[0] > 0.0f ? frame.intrinsics[0] : 1.0f;
+    const float fy = frame.intrinsics[1] > 0.0f ? frame.intrinsics[1] : 1.0f;
+    const float cam_x = (static_cast<float>(u) - frame.intrinsics[2]) * z / fx;
+    const float cam_y = (static_cast<float>(v) - frame.intrinsics[3]) * z / fy;
+    const float cam_z = z;
+
+    out_x = frame.pose[0] * cam_x + frame.pose[1] * cam_y + frame.pose[2] * cam_z + frame.pose[3];
+    out_y = frame.pose[4] * cam_x + frame.pose[5] * cam_y + frame.pose[6] * cam_z + frame.pose[7];
+    out_z = frame.pose[8] * cam_x + frame.pose[9] * cam_y + frame.pose[10] * cam_z + frame.pose[11];
+}
+
+/// Resize the frame's colour image to the (postprocessed) depth size.
+[[nodiscard]] inline cv::Mat frame_color_at_depth_size(const FrameData &frame) {
+    if (frame.image_bgr.empty() || frame.depth.empty()) {
+        return {};
+    }
+    cv::Mat color;
+    cv::resize(frame.image_bgr, color, cv::Size(frame.depth.cols, frame.depth.rows), 0, 0, cv::INTER_LINEAR);
+    return color;
+}
+
+/// Write N poses, one whitespace-separated 12-float row per line:
+///   r11 r12 r13 tx r21 r22 r23 ty r31 r32 r33 tz
+[[nodiscard]] inline bool write_poses_txt(const std::filesystem::path &path,
+                                          const std::vector<std::array<float, 12>> &poses) {
+    std::ofstream out(path);
+    if (!out) {
+        return false;
+    }
+    out << std::setprecision(9);
+    for (const auto &pose : poses) {
+        for (std::size_t k = 0; k < 12; ++k) {
+            if (k != 0) {
+                out << ' ';
+            }
+            out << pose[k];
+        }
+        out << '\n';
+    }
+    return static_cast<bool>(out);
+}
+
+/// Write N intrinsics rows, one `fx fy cx cy` per line.
+[[nodiscard]] inline bool write_intrinsics_txt(const std::filesystem::path &path,
+                                               const std::vector<std::array<float, 4>> &intrinsics) {
+    std::ofstream out(path);
+    if (!out) {
+        return false;
+    }
+    out << std::setprecision(6);
+    for (const auto &k : intrinsics) {
+        out << k[0] << ' ' << k[1] << ' ' << k[2] << ' ' << k[3] << '\n';
+    }
+    return static_cast<bool>(out);
+}
+
+/// Back-project every frame's depth map into an ASCII PLY point cloud.
+/// COUNT = H*W*N over all non-empty frames.
+[[nodiscard]] inline bool save_point_cloud_ply(const std::filesystem::path &path,
+                                               const std::vector<FrameData> &frames) {
+    std::size_t total = 0;
+    for (const auto &frame : frames) {
+        if (!frame.depth.empty()) {
+            total += static_cast<std::size_t>(frame.depth.rows) * static_cast<std::size_t>(frame.depth.cols);
+        }
+    }
+
+    std::ofstream out(path);
+    if (!out) {
+        return false;
+    }
+    out << "ply\n"
+        << "format ascii 1.0\n"
+        << "element vertex " << total << "\n"
+        << "property float x\n"
+        << "property float y\n"
+        << "property float z\n"
+        << "property uchar red\n"
+        << "property uchar green\n"
+        << "property uchar blue\n"
+        << "end_header\n";
+    out << std::setprecision(6);
+
+    for (const auto &frame : frames) {
+        if (frame.depth.empty()) {
+            continue;
+        }
+        const cv::Mat color = frame_color_at_depth_size(frame);
+        for (int v = 0; v < frame.depth.rows; ++v) {
+            const float *depth_row = frame.depth.ptr<float>(v);
+            for (int u = 0; u < frame.depth.cols; ++u) {
+                float x = 0.0f;
+                float y = 0.0f;
+                float z = 0.0f;
+                backproject_point(frame, u, v, depth_row[u], x, y, z);
+
+                int red = 0;
+                int green = 0;
+                int blue = 0;
+                if (!color.empty()) {
+                    const cv::Vec3b &px = color.at<cv::Vec3b>(v, u);
+                    blue = px[0];
+                    green = px[1];
+                    red = px[2];
+                }
+                out << x << ' ' << y << ' ' << z << ' ' << red << ' ' << green << ' ' << blue << '\n';
+            }
+        }
+    }
+    return static_cast<bool>(out);
+}
+
+/// Write a per-pixel Gaussian PLY placeholder:
+///   x y z nx ny nz red green blue opacity scale_0..2 rot_0..rot_3
+/// opacity=1, scales from the local depth gradient (fallback 0.01*Z),
+/// normal +Z, rotation = identity quaternion.
+[[nodiscard]] inline bool save_gaussians_ply(const std::filesystem::path &path,
+                                             const std::vector<FrameData> &frames) {
+    std::size_t total = 0;
+    for (const auto &frame : frames) {
+        if (!frame.depth.empty()) {
+            total += static_cast<std::size_t>(frame.depth.rows) * static_cast<std::size_t>(frame.depth.cols);
+        }
+    }
+
+    std::ofstream out(path);
+    if (!out) {
+        return false;
+    }
+    out << "ply\n"
+        << "format ascii 1.0\n"
+        << "element vertex " << total << "\n"
+        << "property float x\n"
+        << "property float y\n"
+        << "property float z\n"
+        << "property float nx\n"
+        << "property float ny\n"
+        << "property float nz\n"
+        << "property uchar red\n"
+        << "property uchar green\n"
+        << "property uchar blue\n"
+        << "property float opacity\n"
+        << "property float scale_0\n"
+        << "property float scale_1\n"
+        << "property float scale_2\n"
+        << "property float rot_0\n"
+        << "property float rot_1\n"
+        << "property float rot_2\n"
+        << "property float rot_3\n"
+        << "end_header\n";
+    out << std::setprecision(6);
+
+    for (const auto &frame : frames) {
+        if (frame.depth.empty()) {
+            continue;
+        }
+        const int h = frame.depth.rows;
+        const int w = frame.depth.cols;
+        const cv::Mat color = frame_color_at_depth_size(frame);
+
+        for (int v = 0; v < h; ++v) {
+            const int v0 = std::max(0, v - 1);
+            const int v1 = std::min(h - 1, v + 1);
+            for (int u = 0; u < w; ++u) {
+                const float z = frame.depth.at<float>(v, u);
+                float x = 0.0f;
+                float y = 0.0f;
+                float zc = 0.0f;
+                backproject_point(frame, u, v, z, x, y, zc);
+
+                const int u0 = std::max(0, u - 1);
+                const int u1 = std::min(w - 1, u + 1);
+                const float dzdx = (frame.depth.at<float>(v, u1) - frame.depth.at<float>(v, u0)) * 0.5f;
+                const float dzdy = (frame.depth.at<float>(v1, u) - frame.depth.at<float>(v0, u)) * 0.5f;
+                float scale = std::sqrt(dzdx * dzdx + dzdy * dzdy);
+                if (!(scale > 1e-6f)) {
+                    scale = 0.01f * std::fabs(z);
+                }
+                if (!(scale > 1e-6f)) {
+                    scale = 1e-4f;
+                }
+
+                int red = 0;
+                int green = 0;
+                int blue = 0;
+                if (!color.empty()) {
+                    const cv::Vec3b &px = color.at<cv::Vec3b>(v, u);
+                    blue = px[0];
+                    green = px[1];
+                    red = px[2];
+                }
+
+                out << x << ' ' << y << ' ' << zc << ' ' << 0.0f << ' ' << 0.0f << ' ' << 1.0f << ' ' << red << ' '
+                    << green << ' ' << blue << ' ' << 1.0f << ' ' << scale << ' ' << scale << ' ' << scale << ' '
+                    << 1.0f << ' ' << 0.0f << ' ' << 0.0f << ' ' << 0.0f << '\n';
+            }
+        }
+    }
+    return static_cast<bool>(out);
+}
+
+} // namespace tasks
+
 /// Configuration for the Depth Anything 3 inference engine.
-struct Config {
-    /// Target resolution for the longest side of the input image (pixels).
+struct Config {    /// Target resolution for the longest side of the input image (pixels).
     /// Images will be resized so the longest side equals this value, then
     /// rounded to the nearest multiple of patch_size.
     int process_res{504};
@@ -111,6 +440,19 @@ class DepthAnything3Inference {
     [[nodiscard]] int get_process_res() const noexcept { return config_.process_res; }
     [[nodiscard]] int get_patch_size() const noexcept { return config_.patch_size; }
     [[nodiscard]] const Config &get_config() const noexcept { return config_; }
+
+    /// Raw output tensors (data + shapes) cached by the last run_inference() call.
+    /// Additive, read-only accessor used by the pose/point-map tasks, which need
+    /// model outputs beyond depth and confidence (e.g. a [3,4] extrinsics head or
+    /// a [3,3] intrinsics head). Both vectors are empty before the first
+    /// run_inference() call; a backend that exposes no such outputs simply yields
+    /// no matching shape, and callers fall back to identity pose.
+    [[nodiscard]] const std::vector<std::vector<float>> &get_raw_outputs() const noexcept {
+        return output_data_cache_;
+    }
+    [[nodiscard]] const std::vector<std::vector<int64_t>> &get_raw_output_shapes() const noexcept {
+        return output_shapes_cache_;
+    }
 
   private:
     std::unique_ptr<InferenceBackend> backend_;

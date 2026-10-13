@@ -8,6 +8,7 @@
 #include <fstream>
 #include <gtest/gtest.h>
 #include <iterator>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -413,6 +414,136 @@ TEST(NpyDump, HeaderLayoutMatchesNpyV1) {
     EXPECT_EQ((10u + hlen) % 64u, 0u);
     // Payload: H * W little-endian float32 values.
     EXPECT_EQ(bytes.size(), static_cast<size_t>(10u + hlen) + 3u * 2u * sizeof(float));
+}
+
+// ============================================================================
+// Native task CLI helpers (R-8): task parse, checkpoints, dir glob
+// ============================================================================
+
+TEST(TaskParse, RoundTrip) {
+    EXPECT_EQ(parse_task(""), TaskType::mono);
+    EXPECT_EQ(parse_task("mono"), TaskType::mono);
+    EXPECT_EQ(parse_task("metric"), TaskType::metric);
+    EXPECT_EQ(parse_task("multiview"), TaskType::multiview);
+    EXPECT_EQ(parse_task("pose"), TaskType::pose);
+    EXPECT_EQ(parse_task("reconstruction"), TaskType::reconstruction);
+    EXPECT_EQ(parse_task("gaussian"), TaskType::gaussian);
+    EXPECT_EQ(task_to_string(TaskType::mono), "mono");
+    EXPECT_EQ(task_to_string(TaskType::metric), "metric");
+    EXPECT_EQ(task_to_string(TaskType::multiview), "multiview");
+    EXPECT_EQ(task_to_string(TaskType::pose), "pose");
+    EXPECT_EQ(task_to_string(TaskType::reconstruction), "reconstruction");
+    EXPECT_EQ(task_to_string(TaskType::gaussian), "gaussian");
+    // Round-trip through the string form.
+    for (const std::string name :
+         {"mono", "metric", "multiview", "pose", "reconstruction", "gaussian"}) {
+        EXPECT_EQ(task_to_string(parse_task(name)), name);
+    }
+}
+
+TEST(TaskParse, InvalidThrows) {
+    EXPECT_THROW({ (void)parse_task("slam"); }, std::runtime_error);
+}
+
+TEST(TaskCheckpoints, Recommended) {
+    EXPECT_NE(recommended_checkpoint(TaskType::mono).find("SMALL"), std::string::npos);
+    EXPECT_NE(recommended_checkpoint(TaskType::metric).find("METRIC"), std::string::npos);
+    EXPECT_NE(recommended_checkpoint(TaskType::pose).find("not METRIC"), std::string::npos);
+    EXPECT_NE(recommended_checkpoint(TaskType::reconstruction).find("NESTED"), std::string::npos);
+    EXPECT_NE(recommended_checkpoint(TaskType::gaussian).find("Gaussian"), std::string::npos);
+}
+
+TEST(MetricTaskScaling, Formula) {
+    // Same contract as MetricScaling, routed as the --task metric path uses it:
+    // metric = focal * net / 300, applied per pixel.
+    const float focal = 500.0f;
+    const float net = 1.5f;
+    EXPECT_NEAR(da3::processing::metric_depth_from_relative(net, focal), focal * net / 300.0f, 1e-5f);
+}
+
+TEST(CollectImages, SortedGlob) {
+    const auto dir = std::filesystem::temp_directory_path() / "da3_collect_test";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    std::ofstream(dir / "b.jpg").put('x');
+    std::ofstream(dir / "a.png").put('x');
+    std::ofstream(dir / "c.txt").put('x');
+    const auto paths = collect_image_paths(dir);
+    ASSERT_EQ(paths.size(), 2u);
+    EXPECT_EQ(paths[0].filename().string(), "a.png");
+    EXPECT_EQ(paths[1].filename().string(), "b.jpg");
+    EXPECT_TRUE(collect_image_paths(dir / "missing").empty());
+    std::filesystem::remove_all(dir);
+}
+
+// ============================================================================
+// Pose / PLY / Gaussian file formats — exercise the REAL writers in
+// da3::tasks (src/depth_anything3_inference.hpp), the same code main.cpp uses.
+// ============================================================================
+
+TEST(PoseTxt, Format) {
+    const auto tmp = std::filesystem::temp_directory_path() / "da3_poses_test.txt";
+    const std::vector<std::array<float, 12>> poses = {{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0},
+                                                      {1, 0, 0, 1, 0, 1, 0, 2, 0, 0, 1, 3}};
+    ASSERT_TRUE(tasks::write_poses_txt(tmp, poses));
+    std::ifstream in(tmp);
+    ASSERT_TRUE(in.is_open());
+    std::string line;
+    int n_lines = 0;
+    while (std::getline(in, line)) {
+        ++n_lines;
+        std::istringstream iss(line);
+        const std::vector<float> vals{std::istream_iterator<float>(iss), std::istream_iterator<float>()};
+        EXPECT_EQ(vals.size(), 12u); // N x 12 floats (row-major 3x4 w2c)
+    }
+    EXPECT_EQ(n_lines, 2);
+    std::filesystem::remove(tmp);
+}
+
+TEST(PoseIntrinsics, DefaultFocal) {
+    // R-5: default focal is 1.2 * width when --focal is not passed.
+    EXPECT_NEAR(tasks::default_focal(500), 600.0f, 1e-5f);
+    EXPECT_NEAR(tasks::default_focal(100), 120.0f, 1e-5f);
+}
+
+namespace {
+// Build a real FrameData for the PLY writer tests.
+tasks::FrameData make_test_frame(int rows, int cols, float depth_value) {
+    tasks::FrameData frame;
+    frame.depth = cv::Mat(rows, cols, CV_32F, cv::Scalar(depth_value));
+    frame.image_bgr = cv::Mat(rows, cols, CV_8UC3, cv::Scalar(10, 20, 30));
+    frame.pose = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+    const float fx = tasks::default_focal(cols);
+    frame.intrinsics = {fx, fx, static_cast<float>(cols) / 2.0f, static_cast<float>(rows) / 2.0f};
+    return frame;
+}
+} // namespace
+
+TEST(PlyHeader, WritesVertices) {
+    const auto tmp = std::filesystem::temp_directory_path() / "da3_cloud_test.ply";
+    const std::vector<tasks::FrameData> frames = {make_test_frame(2, 3, 2.0f)};
+    ASSERT_TRUE(tasks::save_point_cloud_ply(tmp, frames));
+    std::ifstream in(tmp);
+    ASSERT_TRUE(in.is_open());
+    const std::string content{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    EXPECT_NE(content.find("ply"), std::string::npos);
+    EXPECT_NE(content.find("element vertex 6"), std::string::npos); // H*W*N = 2*3*1
+    EXPECT_NE(content.find("property float x"), std::string::npos);
+    EXPECT_NE(content.find("property uchar red"), std::string::npos);
+    std::filesystem::remove(tmp);
+}
+
+TEST(GaussianPly, NonEmpty) {
+    const auto tmp = std::filesystem::temp_directory_path() / "da3_gauss_test.ply";
+    const std::vector<tasks::FrameData> frames = {make_test_frame(2, 2, 1.5f)};
+    ASSERT_TRUE(tasks::save_gaussians_ply(tmp, frames));
+    EXPECT_GT(std::filesystem::file_size(tmp), 0u);
+    std::ifstream in(tmp);
+    const std::string content{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    EXPECT_NE(content.find("element vertex 4"), std::string::npos);
+    EXPECT_NE(content.find("opacity"), std::string::npos);
+    EXPECT_NE(content.find("scale_0"), std::string::npos);
+    std::filesystem::remove(tmp);
 }
 
 int main(int argc, char **argv) {

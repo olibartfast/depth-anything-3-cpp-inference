@@ -1,6 +1,35 @@
 #!/usr/bin/env python3
 """
-Export a Depth Anything 3 monocular depth model to ONNX format.
+Export a Depth Anything 3 model to ONNX format.
+
+Native DA3 tasks (--task) and the ONNX outputs each one produces:
+
+| --task         | Input              | Outputs (best-effort; missing heads warn)        |
+|----------------|--------------------|--------------------------------------------------|
+| mono           | (1, 3, H, W)       | depth[, conf]                                    |
+| metric         | (1, 3, H, W)       | depth[, conf] (meters via focal*net/300 in C++)  |
+| multiview      | (N, 3, H, W)       | depth[, conf] with N-view batch dim              |
+| pose           | (N, 3, H, W)       | depth[, conf], extrinsics [N,3,4], intrinsics [N,3,3] |
+| reconstruction | (N, 3, H, W)       | depth[, conf], pointmap                          |
+| gaussian       | (N, 3, H, W)       | depth[, conf], gaussian_params                   |
+
+Usage
+-----
+    python export_onnx.py \\
+        --model-name da3-large \\
+        --output model.onnx \\
+        --process-res 504
+
+    python export_onnx.py \\
+        --model-name da3-large-1.1 \\
+        --output model_pose.onnx \\
+        --task pose --use-ray-pose
+
+    # Or load from local directory:
+    python export_onnx.py \\
+        --model-dir /path/to/local/model \\
+        --output model.onnx
+
 
 The exported ONNX model accepts a single pre-processed image tensor with shape
     (1, 3, H, W)
@@ -85,6 +114,31 @@ def parse_args() -> argparse.Namespace:
         choices=["cpu", "cuda"],
         help="Device on which to run the export trace",
     )
+    parser.add_argument(
+        "--dynamo",
+        action="store_true",
+        help="Use the dynamo ONNX exporter (static shapes) instead of the legacy "
+        "tracer. REQUIRED for models whose fp32 weights exceed ~2GB (Giant, "
+        "Nested): the legacy path cannot serialize protos past the 2GB protobuf "
+        "limit and silently writes a weightless graph. The dynamo path saves "
+        "weights as external data automatically.",
+    )
+    parser.add_argument(
+        "--task",
+        type=str,
+        default="mono",
+        choices=["mono", "metric", "multiview", "pose", "reconstruction", "gaussian"],
+        help="Native DA3 task to export (selects the ONNX output set; "
+        "C++ --task must match). multiview/pose/reconstruction/gaussian use an "
+        "N-view batch input (N, 3, H, W).",
+    )
+    parser.add_argument(
+        "--use-ray-pose",
+        action="store_true",
+        help="Derive camera pose from the ray head (slower, more accurate). "
+        "Forwarded as use_ray_pose to model.model(); only affects pose-capable "
+        "checkpoints (DA3-LARGE/GIANT, not METRIC).",
+    )
     return parser.parse_args()
 
 
@@ -111,6 +165,43 @@ def _patch_cartesian_prod_for_onnx() -> None:
     torch.cartesian_prod = _traceable_cartesian_prod
 
 
+def _patch_rope_for_dynamo() -> None:
+    """Make upstream 2D RoPE dynamo-exportable (static shapes).
+
+    Upstream forward does `max_position = int(positions.max()) + 1`, which
+    raises under torch.export (no int() of a FakeTensor). The frequency table
+    is only used as an embedding lookup by position index, so sizing it by the
+    token count (positions.shape[1] >= max index + 1 for any full patch grid)
+    is exactly equivalent. Applied only for --dynamo exports.
+    """
+    import torch.nn.functional as F
+
+    from depth_anything_3.model.dinov2.layers import rope as rope_mod
+
+    cls = rope_mod.RotaryPositionEmbedding2D
+    orig_rotate = cls._rotate_features
+
+    def _forward(self, tokens: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
+        assert tokens.size(-1) % 2 == 0, "Feature dimension must be even"
+        assert positions.ndim == 3 and positions.shape[-1] == 2, "Positions must be (B, N, 2)"
+        feature_dim = tokens.size(-1) // 2
+        # NOTE: differs from upstream only here (no int(tensor)).
+        max_position = positions.shape[1]
+        cos_comp, sin_comp = self._compute_frequency_components(
+            feature_dim, max_position, tokens.device, tokens.dtype
+        )
+        vertical_features, horizontal_features = tokens.chunk(2, dim=-1)
+        cos = F.embedding(positions[..., 0], cos_comp)[:, None, :, :]
+        sin = F.embedding(positions[..., 0], sin_comp)[:, None, :, :]
+        vertical_features = (vertical_features * cos) + (orig_rotate(vertical_features) * sin)
+        cos = F.embedding(positions[..., 1], cos_comp)[:, None, :, :]
+        sin = F.embedding(positions[..., 1], sin_comp)[:, None, :, :]
+        horizontal_features = (horizontal_features * cos) + (orig_rotate(horizontal_features) * sin)
+        return torch.cat((vertical_features, horizontal_features), dim=-1)
+
+    cls.forward = _forward
+
+
 class MonocularWrapper(torch.nn.Module):
     """
     Thin wrapper around DepthAnything3 that:
@@ -131,17 +222,130 @@ class MonocularWrapper(torch.nn.Module):
         # upstream defaults to [] and `i in None` raises TypeError even eagerly.
         output = self.model.model(imgs, None, None, [], False, False, "saddle_balanced")
 
-        # depth: (B, N, 1, H, W) → squeeze batch+views+channel → (H, W) → add batch dim
-        depth = output["depth"].squeeze(0).squeeze(0).squeeze(0)  # (H, W)
+        # depth: [1,1,H,W] (or legacy [B,N,1,H,W]) → squeeze all size-1 dims → [H,W].
+        # NOTE: bare squeeze() (not chained squeeze(0)) — the dynamo exporter
+        # bakes per-node axes, and chained squeeze(0) breaks ORT shape inference.
+        depth = output["depth"].squeeze()  # (H, W)
         depth = depth.unsqueeze(0)  # (1, H, W)
 
         conf = output.get("depth_conf", None)
         if conf is not None:
-            conf = conf.squeeze(0).squeeze(0)  # (H, W)
+            conf = conf.squeeze()  # (H, W)
             conf = conf.unsqueeze(0)  # (1, H, W)
             return depth, conf
 
         return (depth,)
+
+
+def _squeeze_hw(t: torch.Tensor) -> torch.Tensor:
+    """Squeeze all size-1 dims of a depth-like tensor, then re-add batch dim.
+
+    Handles [1,1,H,W], legacy [B,N,1,H,W], and [N,H,W] → [N,H,W].
+    """
+    out = t.squeeze()
+    if out.ndim == 2:
+        out = out.unsqueeze(0)
+    return out
+
+
+class AnyViewWrapper(torch.nn.Module):
+    """N-view wrapper for multiview/pose/reconstruction/gaussian exports.
+
+    - Input: (N, 3, H, W) batch of pre-processed views.
+    - Forwards ``imgs = image.unsqueeze(0)`` → (1, N, 3, H, W) through
+      ``model.model(imgs, None, None, [], use_ray_pose, False, "saddle_balanced")``.
+    - Best-effort output keys (aliases tried in order; absent heads are simply
+      omitted and reported by the driver with a warning):
+        depth:        output["depth"]                      → depth [N,H,W]
+        conf:         output["depth_conf" | "conf"]        → conf [N,H,W]
+        extrinsics:   output["extrinsics" | "pose" | "poses"] → extrinsics [N,3,4]
+        intrinsics:   output["intrinsics" | "K" | "focal"]  → intrinsics [N,3,3]
+        pointmap:     output["pointmap" | "points" | "point_map"]
+        gaussian:     output["gaussian_params" | "gaussians" | "gs_params"]
+    """
+
+    def __init__(self, model, task: str, use_ray_pose: bool = False):
+        super().__init__()
+        self.model = model
+        self.task = task
+        self.use_ray_pose = use_ray_pose
+
+    @staticmethod
+    def _pick(d: dict, *names):
+        for n in names:
+            if n in d and d[n] is not None:
+                return d[n]
+        return None
+
+    def forward(self, image: torch.Tensor):
+        imgs = image.unsqueeze(0).float()  # (1, N, 3, H, W)
+        output = self.model.model(imgs, None, None, [], self.use_ray_pose, False, "saddle_balanced")
+
+        depth = _squeeze_hw(output["depth"])
+        outs = [depth]
+        names = ["depth"]
+
+        conf = self._pick(output, "depth_conf", "conf")
+        if conf is not None:
+            outs.append(_squeeze_hw(conf))
+            names.append("conf")
+
+        if self.task in ("pose", "reconstruction", "gaussian"):
+            extr = self._pick(output, "extrinsics", "pose", "poses")
+            if extr is not None:
+                outs.append(extr)
+                names.append("extrinsics")
+            intr = self._pick(output, "intrinsics", "K", "focal")
+            if intr is not None:
+                outs.append(intr)
+                names.append("intrinsics")
+
+        if self.task in ("reconstruction", "gaussian"):
+            pm = self._pick(output, "pointmap", "point_map", "points")
+            if pm is not None:
+                outs.append(pm)
+                names.append("pointmap")
+
+        if self.task == "gaussian":
+            gs = self._pick(output, "gaussian_params", "gaussians", "gs_params")
+            if gs is not None:
+                outs.append(gs)
+                names.append("gaussian_params")
+
+        self._last_names = names
+        if len(outs) == 1:
+            return (outs[0],)
+        if len(outs) == 2:
+            return outs[0], outs[1]
+        if len(outs) == 3:
+            return outs[0], outs[1], outs[2]
+        if len(outs) == 4:
+            return outs[0], outs[1], outs[2], outs[3]
+        return tuple(outs)
+
+
+def _warn_missing_heads(task: str, output_names: list) -> None:
+    """Warn when the loaded checkpoint lacks heads the requested task wants."""
+    if task == "pose" and ("extrinsics" not in output_names or "intrinsics" not in output_names):
+        print(
+            "WARNING: pose export produced depth-only outputs (no extrinsics/intrinsics). "
+            "Use a pose-capable any-view checkpoint (DA3-LARGE/GIANT, not METRIC); "
+            "the C++ --task pose falls back to identity poses with a warning.",
+            file=sys.stderr,
+        )
+    if task == "reconstruction" and "pointmap" not in output_names:
+        print(
+            "WARNING: reconstruction export has no pointmap head; the C++ "
+            "--task reconstruction lifts depth maps to output_cloud.ply instead.",
+            file=sys.stderr,
+        )
+    if task == "gaussian" and "gaussian_params" not in output_names:
+        print(
+            "WARNING: gaussian export has no gaussian_params head (needs the upstream "
+            "Gaussian head + gsplat); the C++ --task gaussian writes a depth-lifted "
+            "placeholder output_gaussians.ply instead.",
+            file=sys.stderr,
+        )
 
 
 def main() -> int:
@@ -170,7 +374,17 @@ def main() -> int:
 
     _patch_cartesian_prod_for_onnx()
 
-    wrapper = MonocularWrapper(model)
+    task = args.task
+    multiview_tasks = {"multiview", "pose", "reconstruction", "gaussian"}
+    is_multiview = task in multiview_tasks
+    if is_multiview:
+        wrapper = AnyViewWrapper(model, task, use_ray_pose=args.use_ray_pose)
+        print(f"Export task: {task} (N-view input, use_ray_pose={args.use_ray_pose})")
+    else:
+        if args.use_ray_pose:
+            print("Note: --use-ray-pose only affects pose-capable (multiview-family) exports; ignored here.")
+        wrapper = MonocularWrapper(model)
+        print(f"Export task: {task} (single-view input)")
     wrapper.eval()
 
     # Build a representative dummy input
@@ -183,34 +397,34 @@ def main() -> int:
     if res <= 0:
         res = patch_size
 
-    dummy_input = torch.zeros(1, 3, res, res, dtype=torch.float32, device=device)
+    if is_multiview:
+        # N=2 representative views: the traced graph carries a dynamic
+        # num_views axis on the legacy path (see dynamic_axes below).
+        dummy_input = torch.zeros(2, 3, res, res, dtype=torch.float32, device=device)
+    else:
+        dummy_input = torch.zeros(1, 3, res, res, dtype=torch.float32, device=device)
 
     print(f"Tracing with input shape: {list(dummy_input.shape)}")
 
-    dynamic_axes: dict | None = None
-    if not args.fixed_size:
-        dynamic_axes = {
-            "image": {0: "batch", 2: "height", 3: "width"},
-            "depth": {0: "batch", 1: "height", 2: "width"},
-        }
-        # Try to detect whether conf output exists
+    def _probe_names():
         with torch.no_grad():
             out = wrapper(dummy_input)
-        if len(out) > 1:
-            dynamic_axes["conf"] = {0: "batch", 1: "height", 2: "width"}
+        names = getattr(wrapper, "_last_names", None)
+        if names is not None:
+            return list(names), len(out)
+        # MonocularWrapper has no _last_names: depth[, conf].
+        return (["depth", "conf"] if len(out) > 1 else ["depth"]), len(out)
 
-    output_names = ["depth"]
-    with torch.no_grad():
-        out = wrapper(dummy_input)
-    if len(out) > 1:
-        output_names.append("conf")
-
-    print(f"Output names: {output_names}")
-
-    output_path = args.output
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with torch.no_grad():
+    if args.dynamo:
+        # Static-shape dynamo export for >2GB models. No dynamic_axes: the
+        # traced graph is fixed to the trace resolution anyway (upstream RoPE
+        # tables and int()/cache control flow specialize at trace time).
+        _patch_rope_for_dynamo()
+        output_names, _ = _probe_names()
+        print(f"Output names: {output_names}")
+        _warn_missing_heads(task, output_names)
+        output_path = args.output
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         torch.onnx.export(
             wrapper,
             dummy_input,
@@ -218,10 +432,55 @@ def main() -> int:
             opset_version=args.opset,
             input_names=["image"],
             output_names=output_names,
-            dynamic_axes=dynamic_axes,
-            do_constant_folding=True,
-            dynamo=False,  # legacy tracer: dynamo export fails on DA3 (SymInt/control-flow)
+            dynamo=True,
         )
+    else:
+        dynamic_axes: dict | None = None
+        if not args.fixed_size:
+            if is_multiview:
+                dynamic_axes = {
+                    "image": {0: "num_views", 2: "height", 3: "width"},
+                    "depth": {0: "num_views", 1: "height", 2: "width"},
+                }
+                output_names, n_out = _probe_names()
+                if "conf" in output_names:
+                    dynamic_axes["conf"] = {0: "num_views", 1: "height", 2: "width"}
+                # Any-view heads carry the leading num_views dim; keep it dynamic
+                # so the graph accepts any view count (best-effort by name).
+                for extra in ("extrinsics", "intrinsics", "pointmap", "gaussian_params"):
+                    if extra in output_names:
+                        dynamic_axes[extra] = {0: "num_views"}
+            else:
+                dynamic_axes = {
+                    "image": {0: "batch", 2: "height", 3: "width"},
+                    "depth": {0: "batch", 1: "height", 2: "width"},
+                }
+                # Try to detect whether conf output exists
+                _, n_out = _probe_names()
+                output_names, _ = _probe_names()
+                if len(output_names) > 1:
+                    dynamic_axes["conf"] = {0: "batch", 1: "height", 2: "width"}
+        else:
+            output_names, _ = _probe_names()
+
+        print(f"Output names: {output_names}")
+        _warn_missing_heads(task, output_names)
+
+        output_path = args.output
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with torch.no_grad():
+            torch.onnx.export(
+                wrapper,
+                dummy_input,
+                str(output_path),
+                opset_version=args.opset,
+                input_names=["image"],
+                output_names=output_names,
+                dynamic_axes=dynamic_axes,
+                do_constant_folding=True,
+                dynamo=False,  # legacy tracer: dynamo export fails on DA3 (SymInt/control-flow)
+            )
 
     print(f"Model exported to: {output_path}")
 
@@ -229,8 +488,12 @@ def main() -> int:
     try:
         import onnx
         model_onnx = onnx.load(str(output_path))
-        onnx.checker.check_model(model_onnx)
-        print("ONNX model validated successfully.")
+        if any(getattr(i, "data_location", 0) for i in model_onnx.graph.initializer):
+            print("ONNX model with external data loaded successfully; "
+                  "skipping in-memory checker (>2GB proto limit).")
+        else:
+            onnx.checker.check_model(model_onnx)
+            print("ONNX model validated successfully.")
     except ImportError:
         print("onnx package not installed — skipping validation.")
     except Exception as exc:  # noqa: BLE001

@@ -230,6 +230,8 @@ The output depth colormap is saved as **`output_depth.jpg`** in the current dire
 ./build/inference_app model.onnx image.jpg --task mono
 # Metric depth in meters (DA3METRIC-LARGE; Nested is already meters: add --already-metric)
 ./build/inference_app model.onnx image.jpg --task metric --focal 500
+# Camera-depth preset (HF depth-anything/camera-depth-models; exact fx/fy via --focal)
+./build/inference_app model.onnx image.jpg --task metric --camera d435 --focal 600
 # Multi-view: pass a directory (sorted *.jpg/*.jpeg/*.png → output_depth_%03d.jpg)
 ./build/inference_app model.onnx ./views/ --task multiview
 # Pose: poses.txt (N×12 w2c) + intrinsics.txt (N×4 fx fy cx cy)
@@ -251,6 +253,9 @@ The output depth colormap is saved as **`output_depth.jpg`** in the current dire
 
 Notes: per-frame multi-view is a baseline — spatially consistent fusion needs an
 any-view ONNX (`python export_onnx.py --task multiview|pose|… --use-ray-pose`).
+Dynamic-axes exports are trace-shape-locked (finding F-1, proven 2026-10-13:
+a 504-trace fails on 252×504 input in RoPE broadcast) — match `--process-res`
+to the trace shape or export with `--fixed-size` (required for TensorRT).
 Tasks whose head the loaded ONNX lacks degrade gracefully (identity poses,
 depth-lifted cloud/gaussians) with a warning, never a silent wrong result.
 License: Small/Base/Mono/Metric Apache-2.0; Large/Giant/Nested CC BY-NC 4.0 (prefer `-1.1`).

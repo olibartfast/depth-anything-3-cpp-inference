@@ -21,4 +21,4 @@
 | V-5 | R-5 | `--model-name` help mentions camera ids |
 
 ## Evidence
-- (to fill on run)
+- 2026-10-13: build clean; `ctest -R UnitTests` pass (CameraParse/CameraCheckpoint/CameraFocalPrecedence); `py_compile` OK; `--help` shows 7 presets; `--task metric --camera base` end-to-end on da3-small: prints preset id + skip-scaling note + writes metric npy. Camera repo ids verified against HF collection page (`camera-depth-model-<slug>`); no fx/fy invented (`grep` shows only `--focal`/1.2*W). F-1 shape-lock documented in export `--help` + README.

@@ -533,8 +533,7 @@ TEST(PlyHeader, WritesVertices) {
     std::filesystem::remove(tmp);
 }
 
-TEST(GaussianPly, NonEmpty) {
-    const auto tmp = std::filesystem::temp_directory_path() / "da3_gauss_test.ply";
+TEST(GaussianPly, NonEmpty) {    const auto tmp = std::filesystem::temp_directory_path() / "da3_gauss_test.ply";
     const std::vector<tasks::FrameData> frames = {make_test_frame(2, 2, 1.5f)};
     ASSERT_TRUE(tasks::save_gaussians_ply(tmp, frames));
     EXPECT_GT(std::filesystem::file_size(tmp), 0u);
@@ -544,6 +543,49 @@ TEST(GaussianPly, NonEmpty) {
     EXPECT_NE(content.find("opacity"), std::string::npos);
     EXPECT_NE(content.find("scale_0"), std::string::npos);
     std::filesystem::remove(tmp);
+}
+
+// ============================================================================
+// Camera presets (R-4) — call the production header functions directly.
+// ============================================================================
+
+TEST(CameraParse, RoundTrip) {
+    EXPECT_EQ(parse_camera(""), CameraPreset::none);
+    EXPECT_EQ(parse_camera("d405"), CameraPreset::d405);
+    EXPECT_EQ(parse_camera("d435"), CameraPreset::d435);
+    EXPECT_EQ(parse_camera("l515"), CameraPreset::l515);
+    EXPECT_EQ(parse_camera("kinect"), CameraPreset::kinect);
+    EXPECT_EQ(parse_camera("zed2i-neural"), CameraPreset::zed2i_neural);
+    EXPECT_EQ(parse_camera("zed2i-quality"), CameraPreset::zed2i_quality);
+    EXPECT_EQ(parse_camera("base"), CameraPreset::base);
+    EXPECT_EQ(camera_to_string(CameraPreset::d405), "d405");
+    EXPECT_EQ(camera_to_string(CameraPreset::zed2i_neural), "zed2i-neural");
+    EXPECT_EQ(camera_to_string(CameraPreset::zed2i_quality), "zed2i-quality");
+    EXPECT_EQ(camera_to_string(CameraPreset::base), "base");
+    EXPECT_EQ(camera_to_string(CameraPreset::none), "");
+}
+
+TEST(CameraParse, InvalidThrows) {
+    EXPECT_THROW({ (void)parse_camera("realsense"); }, std::runtime_error);
+}
+
+TEST(CameraCheckpoint, Mapping) {
+    EXPECT_EQ(camera_checkpoint(CameraPreset::d405), "d405");
+    EXPECT_EQ(camera_checkpoint(CameraPreset::d435), "d435");
+    EXPECT_EQ(camera_checkpoint(CameraPreset::base), "base");
+    EXPECT_EQ(camera_checkpoint(CameraPreset::none), "");
+    // Verified against the HF collection page (2026-10-13).
+    EXPECT_EQ(camera_hf_id(CameraPreset::d435), "depth-anything/camera-depth-model-d435");
+    EXPECT_EQ(camera_hf_id(CameraPreset::base), "depth-anything/camera-depth-model-base");
+    EXPECT_EQ(camera_hf_id(CameraPreset::none), "");
+}
+
+TEST(CameraFocalPrecedence, ExplicitFocalWins) {
+    // base implies already-metric only when no explicit --focal was passed.
+    EXPECT_TRUE(camera_implies_already_metric(CameraPreset::base, /*focal_set=*/false));
+    EXPECT_FALSE(camera_implies_already_metric(CameraPreset::base, /*focal_set=*/true));
+    EXPECT_FALSE(camera_implies_already_metric(CameraPreset::d435, false));
+    EXPECT_FALSE(camera_implies_already_metric(CameraPreset::none, false));
 }
 
 int main(int argc, char **argv) {

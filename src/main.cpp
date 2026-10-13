@@ -164,6 +164,7 @@ static bool apply_model_pose(const DepthAnything3Inference &inference, std::arra
 
 struct Options {
     TaskType task{TaskType::mono};
+    CameraPreset camera{CameraPreset::none}; // --camera preset; none -> unset
     float focal{500.0f};
     bool focal_set{false}; // true when --focal was passed; else 1.2*W default
     std::filesystem::path input_dir;  // overrides the positional <image> when set
@@ -174,6 +175,13 @@ struct Options {
     bool upscale_to_orig{true};
     int process_res{504};
     std::filesystem::path dump_raw;
+
+    /// True when metric scaling must be skipped: either the user passed
+    /// --already-metric, or the camera preset implies meters on its own (the
+    /// Nested-family `base` checkpoint). An explicit --focal always wins.
+    [[nodiscard]] bool skip_metric_scaling() const noexcept {
+        return already_metric || camera_implies_already_metric(camera, focal_set);
+    }
 };
 
 static void print_usage(std::ostream &os, const char *program) {
@@ -186,6 +194,12 @@ static void print_usage(std::ostream &os, const char *program) {
     os << "Options:\n";
     os << "  --task TASK       Native DA3 task: mono, metric, multiview, pose,\n";
     os << "                    reconstruction, gaussian (default: mono)\n";
+    os << "  --camera ID       Camera-depth preset: d405, d435, l515, kinect,\n";
+    os << "                    zed2i-neural, zed2i-quality, base (default: none).\n";
+    os << "                    Selects the recommended checkpoint under the HF\n";
+    os << "                    collection depth-anything/camera-depth-models;\n";
+    os << "                    camera models are metric-oriented (prefer --task\n";
+    os << "                    metric). See the camera table below.\n";
     os << "  --focal PX        Focal length in pixels for metric scaling (default: 500;\n";
     os << "                    pose/reconstruction default to 1.2*W unless passed)\n";
     os << "  --input-dir DIR   Directory of input images (overrides positional image)\n";
@@ -206,6 +220,19 @@ static void print_usage(std::ostream &os, const char *program) {
     os << "  pose           poses.txt + intrinsics.txt               DA3-LARGE/GIANT (not METRIC)\n";
     os << "  reconstruction output_cloud.ply                         DA3-GIANT; NESTED-GIANT-LARGE\n";
     os << "  gaussian       output_gaussians.ply (placeholder)       DA3-LARGE/GIANT + Gaussian head\n";
+    os << "\n";
+    os << "Camera presets (--camera) from the HF collection\n";
+    os << "depth-anything/camera-depth-models (metric-oriented; prefer --task metric):\n";
+    os << "  d405           Intel RealSense D405   camera-depth checkpoint\n";
+    os << "  d435           Intel RealSense D435   camera-depth checkpoint\n";
+    os << "  l515           Intel RealSense L515   camera-depth checkpoint\n";
+    os << "  kinect         Microsoft Kinect        camera-depth checkpoint\n";
+    os << "  zed2i-neural   Stereolabs ZED 2i       neural (stacked) variant\n";
+    os << "  zed2i-quality  Stereolabs ZED 2i       quality (stacked) variant\n";
+    os << "  base           Generic RGB camera      already metric by default;\n";
+    os << "                                         skips scaling unless --focal given\n";
+    os << "  No fx/fy values are baked in: pass --focal PX with your per-device\n";
+    os << "  calibration. --focal always wins over the preset default.\n";
     os << "\n";
     os << "License: DA3-Small/Base/Mono/Metric are Apache-2.0; DA3-Large/Giant/Nested\n";
     os << "         are CC BY-NC 4.0 (non-commercial). Prefer the -1.1 weights.\n";
@@ -242,7 +269,7 @@ static void process_frame(DepthAnything3Inference &inference, const std::filesys
     DepthResult result = inference.postprocess_outputs(out_h, out_w, orig_h, orig_w, opts.upscale_to_orig);
 
     if (opts.task == TaskType::metric) {
-        apply_metric_scaling(result.depth, opts.focal, opts.already_metric);
+        apply_metric_scaling(result.depth, opts.focal, opts.skip_metric_scaling());
     }
 
     const double infer_ms = std::chrono::duration<double, std::milli>(t_infer_end - t_infer_start).count();
@@ -386,6 +413,13 @@ int main(int argc, const char *argv[]) {
         const std::string &arg = args[i];
         if (arg == "--task" && i + 1 < args.size()) {
             task_name = args[++i];
+        } else if (arg == "--camera" && i + 1 < args.size()) {
+            try {
+                opts.camera = parse_camera(args[++i]);
+            } catch (const std::exception &e) {
+                std::cerr << "Invalid value for --camera: " << e.what() << std::endl;
+                return 1;
+            }
         } else if (arg == "--focal" && i + 1 < args.size()) {
             try {
                 opts.focal = std::stof(args[++i]);
@@ -472,6 +506,17 @@ int main(int argc, const char *argv[]) {
                   << ")" << std::endl;
         if (opts.use_ray_pose) {
             std::cout << "Note: --use-ray-pose requested." << std::endl;
+        }
+        if (opts.camera != CameraPreset::none) {
+            std::cout << "Camera preset: " << camera_to_string(opts.camera) << " (" << camera_hf_id(opts.camera) << ")"
+                      << std::endl;
+            if (opts.task == TaskType::mono) {
+                std::cout << "Note: camera-depth models are metric-oriented; prefer --task metric." << std::endl;
+            }
+            if (camera_implies_already_metric(opts.camera, opts.focal_set)) {
+                std::cout << "Note: preset '" << camera_to_string(opts.camera)
+                          << "' already outputs meters; skipping focal*net/300 scaling." << std::endl;
+            }
         }
 
         Config config;

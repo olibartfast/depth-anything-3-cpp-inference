@@ -91,6 +91,118 @@ enum class TaskType { mono, metric, multiview, pose, reconstruction, gaussian };
     return "";
 }
 
+/// Camera preset for per-camera metric depth checkpoints from the Hugging Face
+/// collection `depth-anything/camera-depth-models`.
+///
+/// These checkpoints are trained per camera model and are metric-oriented:
+/// they output depth that needs the camera focal length (px) to reach meters
+/// (see the metric formula in README/`processing_utils`). No fx/fy values are
+/// baked in — the exact intrinsics remain a user `--focal` input (R-2).
+enum class CameraPreset { none, d405, d435, l515, kinect, zed2i_neural, zed2i_quality, base };
+
+/// Parse a `--camera` argument into a CameraPreset.
+/// @param name  Raw camera id; an empty string maps to CameraPreset::none.
+/// @throws std::runtime_error if the name is not a recognized camera preset.
+[[nodiscard]] inline CameraPreset parse_camera(const std::string &name) {
+    if (name.empty()) {
+        return CameraPreset::none;
+    }
+    if (name == "d405") {
+        return CameraPreset::d405;
+    }
+    if (name == "d435") {
+        return CameraPreset::d435;
+    }
+    if (name == "l515") {
+        return CameraPreset::l515;
+    }
+    if (name == "kinect") {
+        return CameraPreset::kinect;
+    }
+    if (name == "zed2i-neural") {
+        return CameraPreset::zed2i_neural;
+    }
+    if (name == "zed2i-quality") {
+        return CameraPreset::zed2i_quality;
+    }
+    if (name == "base") {
+        return CameraPreset::base;
+    }
+    throw std::runtime_error("Unknown camera preset: '" + name +
+                             "' (expected one of: d405, d435, l515, kinect, zed2i-neural, zed2i-quality, base)");
+}
+
+/// Canonical, lowercase CLI name for a CameraPreset (inverse of parse_camera).
+/// The no-preset sentinel maps to the empty string.
+[[nodiscard]] inline std::string camera_to_string(CameraPreset preset) {
+    switch (preset) {
+    case CameraPreset::none:
+        return "";
+    case CameraPreset::d405:
+        return "d405";
+    case CameraPreset::d435:
+        return "d435";
+    case CameraPreset::l515:
+        return "l515";
+    case CameraPreset::kinect:
+        return "kinect";
+    case CameraPreset::zed2i_neural:
+        return "zed2i-neural";
+    case CameraPreset::zed2i_quality:
+        return "zed2i-quality";
+    case CameraPreset::base:
+        return "base";
+    }
+    return "";
+}
+
+/// Recommended checkpoint id within `depth-anything/camera-depth-models` for a
+/// preset. The no-preset sentinel maps to the empty string. Kept separate from
+/// camera_to_string so the CLI name and the HF checkpoint id can diverge later
+/// without touching callers.
+[[nodiscard]] inline std::string camera_checkpoint(CameraPreset preset) {
+    switch (preset) {
+    case CameraPreset::none:
+        return "";
+    case CameraPreset::d405:
+        return "d405";
+    case CameraPreset::d435:
+        return "d435";
+    case CameraPreset::l515:
+        return "l515";
+    case CameraPreset::kinect:
+        return "kinect";
+    case CameraPreset::zed2i_neural:
+        return "zed2i-neural";
+    case CameraPreset::zed2i_quality:
+        return "zed2i-quality";
+    case CameraPreset::base:
+        return "base";
+    }
+    return "";
+}
+
+/// Fully-qualified Hugging Face repo for a camera preset, in
+/// `depth-anything/camera-depth-model-<checkpoint>` form (verified against the
+/// HF collection page 2026-10-13). The no-preset sentinel maps to "".
+[[nodiscard]] inline std::string camera_hf_id(CameraPreset preset) {
+    const std::string checkpoint = camera_checkpoint(preset);
+    if (checkpoint.empty()) {
+        return "";
+    }
+    return "depth-anything/camera-depth-model-" + checkpoint;
+}
+
+/// Whether a camera preset implies `--already-metric` semantics for the given
+/// focal-override state.
+///
+/// This is a CLI-defined rule (spec R-1), not an upstream claim: the generic
+/// `base` preset is treated as already-metric by default, so the
+/// `focal*net/300` scaling is skipped. An explicit `--focal` always wins.
+[[nodiscard]] inline bool camera_implies_already_metric(CameraPreset preset, bool focal_set) noexcept {
+    return preset == CameraPreset::base && !focal_set;
+}
+
 /// Collect image paths (*.jpg, *.jpeg, *.png — case-insensitive) from a
 /// directory, sorted lexicographically for deterministic multi-view ordering.
 /// Returns an empty vector when @p dir is not a readable directory.

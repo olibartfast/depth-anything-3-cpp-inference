@@ -77,7 +77,9 @@ def parse_args() -> argparse.Namespace:
     group.add_argument(
         "--model-name",
         type=str,
-        help="Hugging Face model name, e.g. 'da3-large', 'da3mono-large', 'da3metric-large'",
+        help="Hugging Face model name, e.g. 'da3-large', 'da3mono-large', 'da3metric-large'. "
+        "Camera-depth ids (d405, d435, l515, kinect, zed2i-neural, zed2i-quality, base) "
+        "resolve under the depth-anything/camera-depth-models collection.",
     )
     group.add_argument(
         "--model-dir",
@@ -99,7 +101,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fixed-size",
         action="store_true",
-        help="Export with fixed H/W instead of dynamic axes (requires --process-res and a square image)",
+        help="Export with fixed H/W instead of dynamic axes (requires --process-res and a square image). "
+        "NOTE: dynamic-axes graphs are trace-shape-locked (finding F-1): the upstream RoPE tables specialize "
+        "at trace time, so off-shape inputs (e.g. 252x504 from a 504 trace) fail in broadcast. Prefer "
+        "--fixed-size for TensorRT/static-shape use.",
     )
     parser.add_argument(
         "--opset",
@@ -324,6 +329,25 @@ class AnyViewWrapper(torch.nn.Module):
         return tuple(outs)
 
 
+_CAMERA_IDS = {"d405", "d435", "l515", "kinect", "zed2i-neural", "zed2i-quality", "base"}
+
+
+def _resolve_model_id(model_name: str) -> str:
+    """Resolve --model-name to a Hugging Face repo id.
+
+    Camera-depth ids (d405, d435, l515, kinect, zed2i-neural, zed2i-quality,
+    base; case-insensitive) resolve under the
+    depth-anything/camera-depth-models collection; anything else keeps the
+    legacy depth-anything/<UPPER> mapping.
+    """
+    slug = model_name.strip().lower()
+    if slug in _CAMERA_IDS:
+        repo = f"depth-anything/camera-depth-model-{slug}"
+        print(f"Camera-depth model: {repo} (collection depth-anything/camera-depth-models)")
+        return repo
+    return f"depth-anything/{model_name.upper()}"
+
+
 def _warn_missing_heads(task: str, output_names: list) -> None:
     """Warn when the loaded checkpoint lacks heads the requested task wants."""
     if task == "pose" and ("extrinsics" not in output_names or "intrinsics" not in output_names):
@@ -367,7 +391,7 @@ def main() -> int:
     if args.model_dir is not None:
         model = DepthAnything3.from_pretrained(str(args.model_dir))
     else:
-        model = DepthAnything3.from_pretrained(f"depth-anything/{args.model_name.upper()}")
+        model = DepthAnything3.from_pretrained(_resolve_model_id(args.model_name))
 
     model = model.to(device=device)
     model.eval()

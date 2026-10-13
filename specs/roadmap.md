@@ -9,10 +9,10 @@ Status values: `idea` · `planned` · `in progress` · `done` · `blocked` · `d
 - Spec: `specs/2026-10-11-da3-upstream-alignment/` Branch: `spec/da3-upstream-alignment`
 
 ## Phase 2 — Camera-depth + metric handling
-- Status: planned
+- Status: in progress
 - Outcome: metric formula + camera-specific models (D405/D435/L515/Kinect/ZED2I-neural/ZED2I-quality/base) documented, unit-tested scaling helper, README table updated
 - Proves: metric users get correct real-world scale
-- Spec: `specs/2026-10-11-da3-upstream-alignment/` (R-5) or follow-on slice
+- Spec: `specs/2026-10-13-da3-camera-depth/` Branch: `spec/da3-camera-depth` (supercedes R-5 stub in `2026-10-11-da3-upstream-alignment/`)
 
 ## Phase 3 — Any-view design spike (deferred)
 - Status: in progress (thin front-end slice: `--task` CLI landed 2026-10-12 — mono/metric fully wired, multiview per-frame baseline loop, pose/reconstruction/gaussian standard-file outputs with graceful degradation; true N-view consistent fusion, streaming, glb/npz/3DGS-video still deferred)
@@ -27,6 +27,7 @@ Status values: `idea` · `planned` · `in progress` · `done` · `blocked` · `d
 - Spec: `specs/2026-10-11-da3-gpu-gate/` Branch: `spec/da3-gpu-gate`
 
 ## Deferred / Revisit
+- Status: in progress as `specs/2026-10-13-da3-anyview-fusion/` (Branch: `spec/da3-anyview-fusion` — Small-weights fusion attempt + streaming chunks + F-2 PLY size), `specs/2026-10-13-da3-colab-gate/` (notebook authoring), `specs/2026-10-13-da3-deferred-revisit/` (video input, 3DGS-head verdict, SLAM/Gradio/BENCH keep-or-drop). Nothing silently deferred: every item ends green or BLOCKED-with-reason.
 - [3DGS head, SLAM-Long, video reconstruction, Gradio/CLI parity — needs Phase 3 design + licensing review for Giant/Nested CC BY-NC 4.0]
 - [Benchmark pipeline DA3-BENCH — research tooling, not C++ runtime]
 

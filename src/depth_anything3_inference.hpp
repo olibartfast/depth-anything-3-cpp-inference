@@ -10,6 +10,7 @@
 #include <iomanip>
 #include <memory>
 #include <opencv2/opencv.hpp>
+#include <opencv2/videoio.hpp>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -456,6 +457,42 @@ inline void backproject_point(const FrameData &frame, int u, int v, float z, flo
         }
     }
     return static_cast<bool>(out);
+}
+
+/// Extract video frames to @p out_dir as %03d.jpg (OpenCV VideoCapture,
+/// no ffmpeg dependency). @p fps <= 0 keeps every frame, else samples the
+/// closest frame for each 1/fps step. Returns the frame count.
+[[nodiscard]] inline size_t extract_video_frames(const std::filesystem::path &video, double fps,
+                                                 const std::filesystem::path &out_dir) {
+    cv::VideoCapture cap(video.string());
+    if (!cap.isOpened()) {
+        throw std::runtime_error("Could not open video: " + video.string());
+    }
+    const double src_fps = cap.get(cv::CAP_PROP_FPS);
+    const double step = (fps > 0.0 && src_fps > 0.0) ? src_fps / fps : 1.0;
+    std::filesystem::create_directories(out_dir);
+    size_t written = 0;
+    size_t next_keep = 0;
+    for (size_t i = 0;; ++i) {
+        cv::Mat frame;
+        if (!cap.read(frame) || frame.empty()) {
+            break;
+        }
+        if (static_cast<double>(i) + 0.5 < static_cast<double>(next_keep)) {
+            continue;
+        }
+        next_keep = static_cast<size_t>(static_cast<double>(i) + step + 0.5);
+        char name[32];
+        std::snprintf(name, sizeof(name), "%03zu.jpg", written);
+        if (!cv::imwrite((out_dir / name).string(), frame)) {
+            throw std::runtime_error("Could not write frame to " + out_dir.string());
+        }
+        ++written;
+    }
+    if (written == 0) {
+        throw std::runtime_error("No frames decoded from video: " + video.string());
+    }
+    return written;
 }
 
 } // namespace tasks

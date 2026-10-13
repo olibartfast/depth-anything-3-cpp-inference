@@ -230,6 +230,8 @@ The output depth colormap is saved as **`output_depth.jpg`** in the current dire
 ./build/inference_app model.onnx image.jpg --task mono
 # Metric depth in meters (DA3METRIC-LARGE; Nested is already meters: add --already-metric)
 ./build/inference_app model.onnx image.jpg --task metric --focal 500
+# Video input (frames extracted via OpenCV, then the directory path runs)
+./build/inference_app model.onnx --input-video clip.mp4 --fps 5 --task multiview
 # Camera-depth preset (HF depth-anything/camera-depth-models; exact fx/fy via --focal)
 ./build/inference_app model.onnx image.jpg --task metric --camera d435 --focal 600
 # Multi-view: pass a directory (sorted *.jpg/*.jpeg/*.png → output_depth_%03d.jpg)

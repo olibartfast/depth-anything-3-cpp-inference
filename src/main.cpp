@@ -1,5 +1,6 @@
 #include "depth_anything3_inference.hpp"
 #include "processing_utils.hpp"
+#include <opencv2/videoio.hpp>
 
 #include <algorithm>
 #include <array>
@@ -138,6 +139,8 @@ struct Options {
     std::filesystem::path dump_raw;
     int views_per_batch{0}; // 0 = auto (trace N for static models, streaming single otherwise)
     int ply_stride{1};      // pixel subsampling for PLY outputs (F-2)
+    std::filesystem::path input_video; // --input-video (ffmpeg-free: cv::VideoCapture)
+    double fps{0.0};                   // --fps sampling rate (0 = every frame)
 
     /// True when metric scaling must be skipped: either the user passed
     /// --already-metric, or the camera preset implies meters on its own
@@ -176,6 +179,9 @@ static void print_usage(std::ostream &os, const char *program) {
     os << "  --views-per-batch K Stream views in chunks of K (default: trace N for\n";
     os << "                    static batch models, frame-by-frame otherwise)\n";
     os << "  --ply-stride S    Subsample PLY outputs every S-th pixel (default: 1)\n";
+    os << "  --input-video PATH Extract frames via cv::VideoCapture into a temp\n";
+    os << "                    dir, then run the directory path (pairs with --fps)\n";
+    os << "  --fps K           Sample K frames/sec from --input-video (default: all)\n";
     os << "                    (multi-view: PATH is a directory or filename prefix)\n";
     os << "  --help            Show this help and exit\n";
     os << "\n";
@@ -502,6 +508,18 @@ int main(int argc, const char *argv[]) {
                 std::cerr << "Invalid value for --views-per-batch: " << e.what() << std::endl;
                 return 1;
             }
+        } else if (arg == "--input-video" && i + 1 < args.size()) {
+            opts.input_video = args[++i];
+        } else if (arg == "--fps" && i + 1 < args.size()) {
+            try {
+                opts.fps = std::stod(args[++i]);
+                if (opts.fps < 0.0) {
+                    throw std::invalid_argument("fps must be non-negative");
+                }
+            } catch (const std::exception &e) {
+                std::cerr << "Invalid value for --fps: " << e.what() << std::endl;
+                return 1;
+            }
         } else if (arg == "--ply-stride" && i + 1 < args.size()) {
             try {
                 opts.ply_stride = std::stoi(args[++i]);
@@ -536,8 +554,8 @@ int main(int argc, const char *argv[]) {
     if (!opts.input_dir.empty()) {
         input = opts.input_dir;
     }
-    if (input.empty()) {
-        std::cerr << "Error: missing <path_to_image> (or pass --input-dir DIR)" << std::endl;
+    if (input.empty() && opts.input_video.empty()) {
+        std::cerr << "Error: missing <path_to_image> (or pass --input-dir DIR / --input-video PATH)" << std::endl;
         print_usage(std::cerr, argv[0]);
         return 1;
     }
@@ -549,7 +567,18 @@ int main(int argc, const char *argv[]) {
         return 1;
     }
 
+    std::filesystem::path video_tmp;
     try {
+        if (!opts.input_video.empty()) {
+            if (!opts.input_dir.empty() || !image_path.empty()) {
+                throw std::runtime_error("--input-video is exclusive with <image> and --input-dir");
+            }
+            video_tmp = std::filesystem::temp_directory_path() /
+                        ("da3_video_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+            const size_t n = tasks::extract_video_frames(opts.input_video, opts.fps, video_tmp);
+            std::cout << "Extracted " << n << " frame(s) to " << video_tmp.string() << std::endl;
+            input = video_tmp;
+        }
         if (!std::filesystem::exists(input)) {
             throw std::runtime_error("Input path does not exist: " + input.string());
         }
@@ -693,7 +722,15 @@ int main(int argc, const char *argv[]) {
         }
 
         write_task_outputs(opts, frames);
+        if (!video_tmp.empty()) {
+            std::error_code ec;
+            std::filesystem::remove_all(video_tmp, ec); // best-effort temp cleanup
+        }
     } catch (const std::exception &e) {
+        if (!video_tmp.empty()) {
+            std::error_code ec;
+            std::filesystem::remove_all(video_tmp, ec);
+        }
         std::cerr << "Error: " << e.what() << std::endl;
         return 1;
     }

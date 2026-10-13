@@ -667,8 +667,7 @@ TEST(BatchPoseView, IdentityWithoutHead) {
     EXPECT_FLOAT_EQ(intr[0], 1.0f); // untouched without a head
 }
 
-TEST(PlyStride, Subsamples) {
-    tasks::FrameData frame;
+TEST(PlyStride, Subsamples) {    tasks::FrameData frame;
     frame.depth = cv::Mat(4, 4, CV_32F, cv::Scalar(2.0f));
     frame.image_bgr = cv::Mat(4, 4, CV_8UC3, cv::Scalar(1, 2, 3));
     frame.pose = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
@@ -679,6 +678,26 @@ TEST(PlyStride, Subsamples) {
     std::string content{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
     EXPECT_NE(content.find("element vertex 4"), std::string::npos); // 2x2 of 4x4
     std::filesystem::remove(tmp);
+}
+
+TEST(VideoExtract, SamplesByFps) {
+    const auto dir = std::filesystem::temp_directory_path() / "da3_video_test";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    const auto avi = dir / "t.avi";
+    cv::Mat frame(64, 64, CV_8UC3, cv::Scalar(10, 20, 30));
+    cv::VideoWriter writer(avi.string(), cv::VideoWriter::fourcc('M', 'J', 'P', 'G'), 10, cv::Size(64, 64));
+    ASSERT_TRUE(writer.isOpened());
+    for (int i = 0; i < 5; ++i) {
+        writer.write(frame);
+    }
+    writer.release();
+    const auto out = dir / "frames";
+    // 5 frames @10fps sampled at 5fps (step 2) -> frames 0, 2, 4.
+    EXPECT_EQ(tasks::extract_video_frames(avi, 5.0, out), 3u);
+    EXPECT_EQ(tasks::extract_video_frames(avi, 0.0, dir / "all"), 5u);
+    EXPECT_THROW({ (void)tasks::extract_video_frames(dir / "missing.avi", 0.0, out); }, std::runtime_error);
+    std::filesystem::remove_all(dir);
 }
 
 int main(int argc, char **argv) {

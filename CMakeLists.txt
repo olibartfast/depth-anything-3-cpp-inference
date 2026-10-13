@@ -232,7 +232,7 @@ if(USE_TENSORRT)
 endif()
 
 # --- Find OpenCV ---
-find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui videoio)
 find_package(Threads REQUIRED)
 if(NOT OpenCV_FOUND)
     message(FATAL_ERROR "OpenCV not found. Install via: sudo apt-get install libopencv-dev")

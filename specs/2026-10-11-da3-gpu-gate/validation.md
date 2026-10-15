@@ -43,6 +43,8 @@ DEADLINE_HOURS=2 CUDA_ARCH=86 MODEL=~/da3-small.onnx IMAGE=~/test.jpg \
 | C-2 | Skeleton re-audit (orchestrated) | pass w/ note | 2026-10-12 | bash -n clean on run_gpu_gate.sh/gpu_host_setup.sh/setup_colab.sh, ipynb JSON valid; shellcheck NOT installed locally (UNRUN); local GPU now present (see deviations) |
 
 ## Deviations
+- 2026-10-15 Brev L4 re-run ABORTED (user decision): `da3-gate` (`g2-standard-4:nvidia-l4:1`, $0.85/h) rebooted 3× in ~2h (spot preemption, `last reboot` 14:34/15:40/+1) killing the gate before V-1 — plus the image ships no toolchain (`cmake: command not found`), so the gate could never build without apt installs. Zero results, ~$1.70 burned. Instance deleted. Current-master validation substituted locally on RTX 3060 (see below); L4 sm_89 arch cover remains UNRUN.
+- Local 2026-10-15 re-validation of current master on RTX 3060 host (ORT CPU): build clean, `ctest -R UnitTests` pass; `--task pose` on `/tmp/da3-small-anyview-pose.onnx` (2 square views @280) → real poses (view0 ~identity, view1 rotated/translated, no fallback warning), intrinsics fx≠fy K-decomposed; `--task reconstruction --ply-stride 4` → `output_cloud.ply` written; `--task metric` on dyn mono @504 → finite range + metric `.npy`. Non-square inputs correctly rejected with F-1 shape-lock error.
 - Brev L4 gate 2026-10-12 lessons (all fixed in-repo before the passing run):
   - `brev create --type g2-standard-4` rejected — full TYPE string required (`g2-standard-4:nvidia-l4:1`).
   - "Ready" ≠ SSH-ready on GCP (SSH timeouts ~10 min post-create); `brev ls` BUILD=COMPLETED SHELL=READY is the true signal.

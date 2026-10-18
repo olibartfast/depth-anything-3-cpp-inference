@@ -450,7 +450,7 @@ docker run -v $(pwd)/data:/data da3-onnx /data/model.onnx /data/image.jpg
 
 ## Continuous Integration
 
-GitHub Actions runs `.github/workflows/ci.yml` for pushes and pull requests targeting `master`, plus manual dispatch. Every job is blocking and feeds a single `Quality Gate` status; require that check in the `master` branch protection rule.
+GitHub Actions runs `.github/workflows/ci.yml` for pushes and pull requests targeting `master`, plus manual dispatch. Every job is blocking and feeds a single `Quality Gate` status; `master` requires that check (strict, force pushes and deletions blocked).
 
 | Job | What it enforces |
 |-----|------------------|
@@ -459,9 +459,12 @@ GitHub Actions runs `.github/workflows/ci.yml` for pushes and pull requests targ
 | `Sanitizers` | Debug build with ASan + UBSan, unit tests |
 | `Clang-Tidy` | `clang-analyzer-*` and `bugprone-*` findings fail; the full configured report is uploaded as an artifact |
 | `Cppcheck` | `warning`, `performance`, and `portability` findings fail |
+| `Coverage` | gcov line coverage floor on the tested library surface, plus diff coverage on changed lines |
 | `Quality Gate` | Aggregates the jobs above; required status check |
 
-The gate fails closed: a skipped or cancelled dependency is a failure, not a pass. Branch protection is a repository setting, not a file: **Settings → Branches → Add rule for `master` → Require status checks → `Quality Gate`**.
+The gate fails closed: a skipped or cancelled dependency is a failure, not a pass. Branch protection is a repository setting, not a file: `master` currently requires `Quality Gate` with up-to-date branches, and blocks force pushes and deletions. Direct pushes by admins are still possible; enable “Require a pull request before merging” in **Settings → Branches** to block those too.
+
+The coverage gate is calibrated to the model-free test surface: it enforces 80% line coverage on `depth_anything3_inference`, `processing_utils`, and `inference_backend`, plus 70% diff coverage on changed lines. `main.cpp` and the ONNX Runtime backend are reported but not gated until CLI and real-model tests exist.
 
 The format job is incremental because this tree has historic formatting drift. Format any file you touch with `clang-format-18 -i`; the gate then covers your changed lines. To audit or clean the whole tree:
 
@@ -482,6 +485,12 @@ scripts/ci/run_quality.sh --skip-tests # skip ctest only
 scripts/ci/run_quality.sh --format-all # audit formatting across the tree
 ```
 
+Coverage needs `gcovr` and `diff-cover` on `PATH` (for example in a virtualenv), then:
+
+```bash
+scripts/ci/run-coverage.sh
+```
+
 ### Individual Tools
 
 | Tool | Purpose | How to run |
@@ -489,6 +498,7 @@ scripts/ci/run_quality.sh --format-all # audit formatting across the tree
 | `clang-format-18` | Code formatting | `scripts/ci/check-format.sh --all` (check) or `clang-format-18 -i <files>` (fix) |
 | `clang-tidy-18` | Static analysis | `scripts/ci/run-clang-tidy.sh` (requires `build/compile_commands.json`) |
 | `cppcheck` | Flow-based static analysis | `scripts/ci/run-cppcheck.sh` |
+| `gcovr` + `diff-cover` | Line and changed-line coverage | `scripts/ci/run-coverage.sh` |
 | AddressSanitizer + UBSan | Runtime memory/UB detection | `-DSANITIZERS=ON` at configure time |
 
 `clang-tidy` uses the full check set from `.clang-tidy`, but only `clang-analyzer-*` and `bugprone-*` are blocking by default; the other configured checks are reported in `build/clang-tidy.log`. Override locally with `TIDY_WARNINGS_AS_ERRORS=<glob>` or `STRICT_TIDY=true`. The TensorRT backend is excluded because the default configure does not install TensorRT.

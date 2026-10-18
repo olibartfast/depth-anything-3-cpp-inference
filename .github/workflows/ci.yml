@@ -237,12 +237,66 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  coverage:
+    name: Coverage (gcov)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-deps
+        with:
+          ccache-key: coverage
+
+      - name: Install coverage tools
+        run: |
+          python3 -m venv "$RUNNER_TEMP/coverage-venv"
+          "$RUNNER_TEMP/coverage-venv/bin/pip" install --quiet --disable-pip-version-check gcovr diff-cover
+          echo "$RUNNER_TEMP/coverage-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Resolve diff base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            echo "BASE_REF=$PR_BASE_SHA" >> "$GITHUB_ENV"
+          elif [ "$EVENT_NAME" = "push" ] \
+            && [ -n "$BEFORE_SHA" ] \
+            && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            echo "BASE_REF=$BEFORE_SHA" >> "$GITHUB_ENV"
+          elif [ "$EVENT_NAME" = "push" ]; then
+            echo "BASE_REF=HEAD^" >> "$GITHUB_ENV"
+          else
+            echo "BASE_REF=origin/master" >> "$GITHUB_ENV"
+          fi
+
+      - name: Run coverage gate
+        run: ./scripts/ci/run-coverage.sh
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: |
+            build-coverage/coverage.xml
+            build-coverage/coverage.txt
+            build-coverage/coverage-full.txt
+            build-coverage/coverage-full*.html
+          if-no-files-found: warn
+          retention-days: 7
+
   # Single required status check for branch protection. It fails when any
   # blocking job fails, and writes a compact result table to the run summary.
   quality-gate:
     name: Quality Gate
     if: always()
-    needs: [format, build-test, sanitizers, clang-tidy, cppcheck]
+    needs: [format, build-test, sanitizers, clang-tidy, cppcheck, coverage]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

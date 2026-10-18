@@ -1,0 +1,8 @@
+# LeakSanitizer suppressions.
+#
+# OpenCV's videoio backend probes gphoto2/libusb while constructing a
+# VideoCapture. Those libraries allocate process-lifetime state and never free
+# it, which LeakSanitizer reports at exit. Suppress only the third-party frames;
+# leaks in project code still fail the sanitizer job.
+leak:libgphoto2
+leak:libusb

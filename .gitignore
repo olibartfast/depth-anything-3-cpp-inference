@@ -4,6 +4,7 @@ output
 *.pt
 *.pth
 *.onnx
+!tests/fixtures/*.onnx
 *.engine
 *.trt
 __pycache__

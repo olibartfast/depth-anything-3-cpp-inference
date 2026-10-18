@@ -465,7 +465,7 @@ GitHub Actions runs `.github/workflows/ci.yml` for pushes and pull requests targ
 
 The gate fails closed: a skipped or cancelled dependency is a failure, not a pass. Branch protection is a repository setting, not a file: `master` currently requires `Quality Gate` with up-to-date branches, and blocks force pushes and deletions. Direct pushes by admins are still possible; enable “Require a pull request before merging” in **Settings → Branches** to block those too.
 
-The coverage gate is calibrated to the model-free test surface: it enforces 80% line coverage on `depth_anything3_inference`, `processing_utils`, and `inference_backend`, plus 70% diff coverage on changed lines. `main.cpp` and the ONNX Runtime backend are reported but not gated until CLI and real-model tests exist.
+The coverage gate is calibrated to the model-free test surface: it enforces 80% line coverage on `depth_anything3_inference`, `processing_utils`, and both backend implementations, plus 70% diff coverage on changed lines. The ONNX Runtime backend is exercised end-to-end with `tests/fixtures/tiny_depth.onnx` (216 bytes), so CI needs no model weights. `main.cpp` is reported but not gated until CLI tests exist.
 
 Benchmark data is stored in the `gh-pages` branch by `github-action-benchmark`. Pushes to `master` update the baseline; pull requests compare against it and fail at 150% of the stored median. The threshold is deliberately loose because hosted runners are noisy; tighten it after collecting stable history.
 

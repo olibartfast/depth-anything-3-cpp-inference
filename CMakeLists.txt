@@ -344,8 +344,13 @@ if(USE_ONNX_RUNTIME)
 endif()
 
 # --- Unit Tests ---
-add_executable(unit_tests "${TEST_DIR}/unit/test_depth_anything3_inference.cpp")
+set(TEST_FIXTURE_DIR "${TEST_DIR}/fixtures")
+add_executable(unit_tests
+    "${TEST_DIR}/unit/test_depth_anything3_inference.cpp"
+    "${TEST_DIR}/unit/test_onnx_backend.cpp"
+)
 target_compile_options(unit_tests PRIVATE ${PROJECT_WARNING_FLAGS})
+target_compile_definitions(unit_tests PRIVATE DA3_TEST_FIXTURE_DIR="${TEST_FIXTURE_DIR}")
 target_link_libraries(unit_tests PRIVATE da3_inference_lib gtest gtest_main gmock)
 target_include_directories(unit_tests PRIVATE "${TEST_DIR}/unit")
 

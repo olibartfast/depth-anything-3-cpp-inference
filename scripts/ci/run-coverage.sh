@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Coverage gate: gcov line coverage plus diff coverage on changed lines.
 #
-# Gated surface: the library code exercised by the model-free unit tests.
-# main.cpp and the ONNX Runtime backend are reported but not gated until the
-# CLI and a real ONNX fixture are covered (tracked as follow-ups).
+# Gated surface: the library code exercised by the model-free unit tests,
+# including the ONNX Runtime backend via tests/fixtures/tiny_depth.onnx.
+# main.cpp is reported but not gated until CLI tests exist (follow-up).
 #
 # Environment:
 #   BASE_REF             git revision for diff coverage (default origin/master)
@@ -70,6 +70,7 @@ gcovr -r . \
     --filter 'src/depth_anything3_inference' \
     --filter 'src/processing_utils' \
     --filter 'src/backends/inference_backend' \
+    --filter 'src/backends/onnx_runtime_backend' \
     --xml "$BUILD_DIR/coverage.xml" \
     --txt "$BUILD_DIR/coverage.txt" \
     --print-summary \

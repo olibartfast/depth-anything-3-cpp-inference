@@ -436,8 +436,7 @@ TEST(TaskParse, RoundTrip) {
     EXPECT_EQ(task_to_string(TaskType::reconstruction), "reconstruction");
     EXPECT_EQ(task_to_string(TaskType::gaussian), "gaussian");
     // Round-trip through the string form.
-    for (const std::string name :
-         {"mono", "metric", "multiview", "pose", "reconstruction", "gaussian"}) {
+    for (const std::string name : {"mono", "metric", "multiview", "pose", "reconstruction", "gaussian"}) {
         EXPECT_EQ(task_to_string(parse_task(name)), name);
     }
 }
@@ -534,7 +533,8 @@ TEST(PlyHeader, WritesVertices) {
     std::filesystem::remove(tmp);
 }
 
-TEST(GaussianPly, NonEmpty) {    const auto tmp = std::filesystem::temp_directory_path() / "da3_gauss_test.ply";
+TEST(GaussianPly, NonEmpty) {
+    const auto tmp = std::filesystem::temp_directory_path() / "da3_gauss_test.ply";
     const std::vector<tasks::FrameData> frames = {make_test_frame(2, 2, 1.5f)};
     ASSERT_TRUE(tasks::save_gaussians_ply(tmp, frames));
     EXPECT_GT(std::filesystem::file_size(tmp), 0u);
@@ -604,13 +604,11 @@ std::unique_ptr<DepthAnything3Inference> make_batch_inference() {
     std::iota(depth.begin(), depth.end(), 1.0f);
     std::vector<float> conf(12, 0.5f);
     // Extrinsics: view1 carries tx=5; view0 identity.
-    std::vector<float> extr = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0,
-                               1, 0, 0, 5, 0, 1, 0, 0, 0, 0, 1, 0};
+    std::vector<float> extr = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 5, 0, 1, 0, 0, 0, 0, 1, 0};
     // Intrinsics K = [fx 0 cx; 0 fy cy; 0 0 1] with fx=100, fy=200, cx=3, cy=4.
     std::vector<float> intr = {100, 0, 3, 0, 200, 4, 0, 0, 1, 100, 0, 3, 0, 200, 4, 0, 0, 1};
     auto backend = std::make_unique<MockBackend>();
-    backend->set_outputs({depth, conf, extr, intr},
-                         {{2, 2, 3}, {2, 2, 3}, {2, 3, 4}, {2, 3, 3}});
+    backend->set_outputs({depth, conf, extr, intr}, {{2, 2, 3}, {2, 2, 3}, {2, 3, 4}, {2, 3, 3}});
     return std::make_unique<DepthAnything3Inference>(std::move(backend), cfg);
 }
 

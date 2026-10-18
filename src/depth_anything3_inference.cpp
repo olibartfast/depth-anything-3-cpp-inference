@@ -14,8 +14,7 @@ DepthAnything3Inference::DepthAnything3Inference(const std::filesystem::path &mo
     // Validate at least one output (depth)
     const size_t num_outputs = backend_->get_output_count();
     if (num_outputs < 1) {
-        throw std::runtime_error("Model must have at least 1 output (depth), but got " +
-                                 std::to_string(num_outputs));
+        throw std::runtime_error("Model must have at least 1 output (depth), but got " + std::to_string(num_outputs));
     }
     std::cout << "Model loaded successfully with " << num_outputs << " output(s)." << std::endl;
 }
@@ -24,7 +23,7 @@ DepthAnything3Inference::DepthAnything3Inference(std::unique_ptr<InferenceBacken
     : backend_(std::move(backend)), config_(config), input_shape_({1, 3, 0, 0}) {}
 
 std::vector<float> DepthAnything3Inference::preprocess_image(const std::filesystem::path &image_path, int &orig_h,
-                                                              int &orig_w, int &out_h, int &out_w) {
+                                                             int &orig_w, int &out_h, int &out_w) {
     if (!std::filesystem::exists(image_path)) {
         throw std::runtime_error("Image file does not exist: " + image_path.string());
     }
@@ -38,7 +37,7 @@ std::vector<float> DepthAnything3Inference::preprocess_image(const std::filesyst
 }
 
 std::vector<float> DepthAnything3Inference::preprocess_image(const cv::Mat &bgr_image, int &orig_h, int &orig_w,
-                                                              int &out_h, int &out_w) {
+                                                             int &out_h, int &out_w) {
     if (bgr_image.empty()) {
         throw std::runtime_error("Input image is empty");
     }
@@ -68,9 +67,8 @@ void DepthAnything3Inference::run_inference(std::span<const float> input_data, i
 
     for (size_t i = 0; i < num_outputs; ++i) {
         auto out_shape = backend_->get_output_shape(i);
-        const size_t size =
-            std::accumulate(out_shape.begin(), out_shape.end(), size_t{1},
-                            [](size_t acc, int64_t dim) { return acc * static_cast<size_t>(dim); });
+        const size_t size = std::accumulate(out_shape.begin(), out_shape.end(), size_t{1},
+                                            [](size_t acc, int64_t dim) { return acc * static_cast<size_t>(dim); });
 
         std::vector<float> data(size);
         backend_->get_output_data(i, data.data(), size);
@@ -80,8 +78,7 @@ void DepthAnything3Inference::run_inference(std::span<const float> input_data, i
     }
 }
 
-void DepthAnything3Inference::run_inference_batch(const std::vector<std::vector<float>> &frames, int out_h,
-                                                  int out_w) {
+void DepthAnything3Inference::run_inference_batch(const std::vector<std::vector<float>> &frames, int out_h, int out_w) {
     if (frames.empty()) {
         throw std::invalid_argument("run_inference_batch: no frames");
     }
@@ -105,9 +102,8 @@ void DepthAnything3Inference::run_inference_batch(const std::vector<std::vector<
     output_shapes_cache_.clear();
     for (size_t i = 0; i < num_outputs; ++i) {
         auto out_shape = backend_->get_output_shape(i);
-        const size_t size =
-            std::accumulate(out_shape.begin(), out_shape.end(), size_t{1},
-                            [](size_t acc, int64_t dim) { return acc * static_cast<size_t>(dim); });
+        const size_t size = std::accumulate(out_shape.begin(), out_shape.end(), size_t{1},
+                                            [](size_t acc, int64_t dim) { return acc * static_cast<size_t>(dim); });
         std::vector<float> data(size);
         backend_->get_output_data(i, data.data(), size);
         output_data_cache_.push_back(std::move(data));
@@ -142,7 +138,7 @@ cv::Mat extract_view_mat(const std::vector<float> &data, const std::vector<int64
 } // namespace
 
 DepthResult DepthAnything3Inference::postprocess_outputs(int out_h, int out_w, int orig_h, int orig_w,
-                                                          bool upscale_to_orig) {
+                                                         bool upscale_to_orig) {
     if (output_data_cache_.empty()) {
         throw std::runtime_error("No outputs cached — call run_inference() first");
     }
@@ -281,8 +277,8 @@ cv::Mat DepthAnything3Inference::colorize_conf(const cv::Mat &conf_map) {
     return da3::processing::apply_conf_colormap(conf_map);
 }
 
-std::optional<std::filesystem::path>
-DepthAnything3Inference::save_output_image(const cv::Mat &image, const std::filesystem::path &path) {
+std::optional<std::filesystem::path> DepthAnything3Inference::save_output_image(const cv::Mat &image,
+                                                                                const std::filesystem::path &path) {
     if (cv::imwrite(path.string(), image)) {
         return path;
     }

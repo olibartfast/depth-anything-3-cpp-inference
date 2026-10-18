@@ -14,7 +14,7 @@ OnnxRuntimeBackend::OnnxRuntimeBackend()
       memory_info_(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault)) {}
 
 std::vector<int64_t> OnnxRuntimeBackend::initialize(const std::filesystem::path &model_path,
-                                                     const std::vector<int64_t> &input_shape) {
+                                                    const std::vector<int64_t> &input_shape) {
     if (!std::filesystem::exists(model_path)) {
         throw std::runtime_error("Model file does not exist: " + model_path.string());
     }
@@ -47,8 +47,7 @@ std::vector<int64_t> OnnxRuntimeBackend::initialize(const std::filesystem::path 
                 }
                 std::cout << "]" << std::endl;
             } else {
-                std::cout << "[ONNX Runtime] Model has dynamic spatial dims; using per-call shapes."
-                          << std::endl;
+                std::cout << "[ONNX Runtime] Model has dynamic spatial dims; using per-call shapes." << std::endl;
             }
         } else {
             throw std::runtime_error("Could not auto-detect valid input shape from model.");

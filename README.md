@@ -454,7 +454,7 @@ GitHub Actions runs `.github/workflows/ci.yml` for pushes and pull requests targ
 
 | Job | What it enforces |
 |-----|------------------|
-| `Format` | `clang-format-18` on lines changed by the push/PR; whole-tree audit via manual dispatch |
+| `Format` | `clang-format-18` across the whole tree |
 | `Build & Test (clang, gcc)` | Release build with `-DWERROR=ON`, unit tests, benchmark smoke test |
 | `Sanitizers` | Debug build with ASan + UBSan, unit tests |
 | `Clang-Tidy` | `clang-analyzer-*` and `bugprone-*` findings fail; the full configured report is uploaded as an artifact |
@@ -470,23 +470,17 @@ The coverage gate is calibrated to the model-free test surface: it enforces 80% 
 
 Benchmark data is stored in the `gh-pages` branch by `github-action-benchmark`. Pushes to `master` update the baseline; pull requests compare against it and fail at 150% of the stored median. The threshold is deliberately loose because hosted runners are noisy; tighten it after collecting stable history. The dashboard is at <https://olibartfast.ninja/depth-anything-3-cpp-inference/benchmarks/> (the site root redirects there).
 
-The format job is incremental because this tree has historic formatting drift. Format any file you touch with `clang-format-18 -i`; the gate then covers your changed lines. To audit or clean the whole tree:
+The whole C++ tree is formatted and checked on every run. Format files with `clang-format-18 -i`; run `scripts/ci/check-format.sh --all` to check without modifying them.
 
-```bash
-scripts/ci/check-format.sh --all
-clang-format-18 -i $(find src tests -type f \( -name '*.cpp' -o -name '*.hpp' \))
-```
-
-For the full audit path, run the workflow manually with `format_scope=all` and/or `strict_tidy=true` (Actions → CI → Run workflow).
+For a strict static-analysis audit, run the workflow manually with `strict_tidy=true` (Actions → CI → Run workflow).
 
 ### Local Quality Run
 
 The same blocking checks run locally, using a separate `build-ci` directory:
 
 ```bash
-scripts/ci/run_quality.sh              # changed-lines format + build + tests + tidy + cppcheck
-scripts/ci/run_quality.sh --skip-tests # skip ctest only
-scripts/ci/run_quality.sh --format-all # audit formatting across the tree
+scripts/ci/run_quality.sh              # whole-tree format + build + tests + tidy + cppcheck
+scripts/ci/run_quality.sh --skip-tests # skip ctest and the benchmark smoke test
 ```
 
 Coverage needs `gcovr` and `diff-cover` on `PATH` (for example in a virtualenv), then:

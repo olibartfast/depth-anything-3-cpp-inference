@@ -1,6 +1,5 @@
 #include "depth_anything3_inference.hpp"
 #include "processing_utils.hpp"
-#include <opencv2/videoio.hpp>
 
 #include <algorithm>
 #include <array>
@@ -12,6 +11,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <opencv2/videoio.hpp>
 #include <string>
 #include <vector>
 
@@ -128,7 +128,7 @@ struct Options {
     TaskType task{TaskType::mono};
     CameraPreset camera{CameraPreset::none}; // --camera preset; none -> unset
     float focal{500.0f};
-    bool focal_set{false}; // true when --focal was passed; else 1.2*W default
+    bool focal_set{false};            // true when --focal was passed; else 1.2*W default
     std::filesystem::path input_dir;  // overrides the positional <image> when set
     std::filesystem::path output_dir; // empty -> current directory
     bool already_metric{false};
@@ -137,8 +137,8 @@ struct Options {
     bool upscale_to_orig{true};
     int process_res{504};
     std::filesystem::path dump_raw;
-    int views_per_batch{0}; // 0 = auto (trace N for static models, streaming single otherwise)
-    int ply_stride{1};      // pixel subsampling for PLY outputs (F-2)
+    int views_per_batch{0};            // 0 = auto (trace N for static models, streaming single otherwise)
+    int ply_stride{1};                 // pixel subsampling for PLY outputs (F-2)
     std::filesystem::path input_video; // --input-video (ffmpeg-free: cv::VideoCapture)
     double fps{0.0};                   // --fps sampling rate (0 = every frame)
 
@@ -218,9 +218,9 @@ static void print_usage(std::ostream &os, const char *program) {
 // ---------------------------------------------------------------------------
 
 // File outputs for one postprocessed result (depth jpg, metric/raw npy, conf).
-static void write_frame_files(const DepthResult &result, const Options &opts,
-                              const std::filesystem::path &depth_out, const std::filesystem::path &raw_out,
-                              const std::filesystem::path &metric_out, const std::filesystem::path &conf_out) {
+static void write_frame_files(const DepthResult &result, const Options &opts, const std::filesystem::path &depth_out,
+                              const std::filesystem::path &raw_out, const std::filesystem::path &metric_out,
+                              const std::filesystem::path &conf_out) {
     if (!depth_out.empty()) {
         const cv::Mat depth_vis = DepthAnything3Inference::colorize_depth(result.depth);
         if (const auto saved = DepthAnything3Inference::save_output_image(depth_vis, depth_out)) {
@@ -301,10 +301,10 @@ static void process_chunk(DepthAnything3Inference &inference, const std::vector<
         int out_w = 0;
         tensors.push_back(inference.preprocess_image(chunk[i], oh, ow, out_h, out_w));
         if (out_h != trace_h || out_w != trace_w) {
-            throw std::runtime_error(
-                "Static batch model expects " + std::to_string(trace_h) + "x" + std::to_string(trace_w) +
-                " inputs (trace-shape-locked, F-1), but got " + std::to_string(out_h) + "x" + std::to_string(out_w) +
-                ". Pass --process-res " + std::to_string(trace_h) + " with square inputs, or export --fixed-size.");
+            throw std::runtime_error("Static batch model expects " + std::to_string(trace_h) + "x" +
+                                     std::to_string(trace_w) + " inputs (trace-shape-locked, F-1), but got " +
+                                     std::to_string(out_h) + "x" + std::to_string(out_w) + ". Pass --process-res " +
+                                     std::to_string(trace_h) + " with square inputs, or export --fixed-size.");
         }
         orig_h[i] = oh;
         orig_w[i] = ow;
@@ -317,7 +317,8 @@ static void process_chunk(DepthAnything3Inference &inference, const std::vector<
               << std::chrono::duration<double, std::milli>(t1 - t0).count() << " ms" << std::endl;
 
     for (size_t i = 0; i < chunk.size(); ++i) {
-        DepthResult result = inference.postprocess_view(i, trace_h, trace_w, orig_h[i], orig_w[i], opts.upscale_to_orig);
+        DepthResult result =
+            inference.postprocess_view(i, trace_h, trace_w, orig_h[i], orig_w[i], opts.upscale_to_orig);
         if (opts.task == TaskType::metric) {
             apply_metric_scaling(result.depth, opts.focal, opts.skip_metric_scaling());
         }
@@ -616,8 +617,8 @@ int main(int argc, const char *argv[]) {
         std::cout << "Timing: init " << init_ms << " ms (model load)" << std::endl;
 
         // File-based tasks accumulate every frame before writing a single artifact.
-        const bool accumulate_frames = opts.task == TaskType::pose || opts.task == TaskType::reconstruction ||
-                                       opts.task == TaskType::gaussian;
+        const bool accumulate_frames =
+            opts.task == TaskType::pose || opts.task == TaskType::reconstruction || opts.task == TaskType::gaussian;
         std::vector<FrameData> frames;
 
         // Batch-model detection: static [N,3,H,W] input (dynamo any-view
@@ -664,47 +665,48 @@ int main(int argc, const char *argv[]) {
                 std::vector<FrameData> *accumulate = accumulate_frames ? &frames : nullptr;
                 for (std::size_t base = 0; base < inputs.size(); base += static_cast<size_t>(trace_n)) {
                     const auto chunk_begin = inputs.begin() + static_cast<ptrdiff_t>(base);
-                    const auto chunk_end =
-                        inputs.begin() + static_cast<ptrdiff_t>(base + static_cast<size_t>(trace_n));
+                    const auto chunk_end = inputs.begin() + static_cast<ptrdiff_t>(base + static_cast<size_t>(trace_n));
                     std::vector<std::filesystem::path> chunk(chunk_begin, chunk_end);
                     process_chunk(inference, chunk, opts, trace_h, trace_w, base, accumulate);
                 }
             }
 
             if (!is_batch_model) {
-            for (std::size_t i = 0; i < inputs.size(); ++i) {
-                const int index = static_cast<int>(i);
-                const std::filesystem::path depth_out =
-                    join_output(opts.output_dir, append_index("output_depth.jpg", index, ".jpg").string());
+                for (std::size_t i = 0; i < inputs.size(); ++i) {
+                    const int index = static_cast<int>(i);
+                    const std::filesystem::path depth_out =
+                        join_output(opts.output_dir, append_index("output_depth.jpg", index, ".jpg").string());
 
-                std::filesystem::path raw_out;
-                if (!opts.dump_raw.empty()) {
-                    raw_out = raw_frame_path(opts.dump_raw, index);
-                }
+                    std::filesystem::path raw_out;
+                    if (!opts.dump_raw.empty()) {
+                        raw_out = raw_frame_path(opts.dump_raw, index);
+                    }
 
-                std::filesystem::path metric_out;
-                if (opts.task == TaskType::metric) {
-                    metric_out = join_output(opts.output_dir, append_index("output_metric.npy", index, ".npy").string());
-                }
+                    std::filesystem::path metric_out;
+                    if (opts.task == TaskType::metric) {
+                        metric_out =
+                            join_output(opts.output_dir, append_index("output_metric.npy", index, ".npy").string());
+                    }
 
-                std::filesystem::path conf_out;
-                if (opts.output_conf) {
-                    conf_out = join_output(opts.output_dir, append_index("output_conf.jpg", index, ".jpg").string());
-                }
+                    std::filesystem::path conf_out;
+                    if (opts.output_conf) {
+                        conf_out =
+                            join_output(opts.output_dir, append_index("output_conf.jpg", index, ".jpg").string());
+                    }
 
-                FrameData *frame_out = nullptr;
-                if (accumulate_frames) {
-                    frames.emplace_back();
-                    frame_out = &frames.back();
+                    FrameData *frame_out = nullptr;
+                    if (accumulate_frames) {
+                        frames.emplace_back();
+                        frame_out = &frames.back();
+                    }
+                    process_frame(inference, inputs[i], opts, depth_out, raw_out, metric_out, conf_out, frame_out);
                 }
-                process_frame(inference, inputs[i], opts, depth_out, raw_out, metric_out, conf_out, frame_out);
-            }
             } // !is_batch_model
         } else {
             if (is_batch_model) {
                 throw std::runtime_error("Static batch model expects " + std::to_string(trace_n) +
-                                         " views; pass a directory with a multiple of " +
-                                         std::to_string(trace_n) + " images.");
+                                         " views; pass a directory with a multiple of " + std::to_string(trace_n) +
+                                         " images.");
             }
             // Single-image mode.
             std::filesystem::path metric_out;

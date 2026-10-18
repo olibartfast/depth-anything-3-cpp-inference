@@ -79,8 +79,7 @@ cv::Mat apply_depth_colormap(const cv::Mat &depth_map) {
         normalized = cv::Mat::zeros(depth_map.size(), CV_8U);
         normalized.setTo(128);
     } else {
-        depth_map.convertTo(normalized, CV_8U, 255.0 / (max_val - min_val),
-                             -255.0 * min_val / (max_val - min_val));
+        depth_map.convertTo(normalized, CV_8U, 255.0 / (max_val - min_val), -255.0 * min_val / (max_val - min_val));
     }
 
     cv::Mat colored;

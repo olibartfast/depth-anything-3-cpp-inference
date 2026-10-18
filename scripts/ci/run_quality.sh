@@ -1,27 +1,22 @@
 #!/usr/bin/env bash
 # Run the same blocking checks as CI, locally.
 #
-#   scripts/ci/run_quality.sh              changed-lines format gate + build + tests + tidy + cppcheck
-#   scripts/ci/run_quality.sh --format-all audit the whole tree with clang-format
-#   scripts/ci/run_quality.sh --skip-tests skip ctest (build is still required for clang-tidy)
+#   scripts/ci/run_quality.sh              whole-tree format + build + tests + tidy + cppcheck
+#   scripts/ci/run_quality.sh --skip-tests skip ctest and the benchmark smoke test
 #
-# Format comparison defaults to origin/master. Override with BASE_REF=<rev>.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
 BUILD_DIR="${BUILD_DIR:-build-ci}"
-BASE_REF="${BASE_REF:-origin/master}"
-FORMAT_ALL=false
 SKIP_TESTS=false
 
 for arg in "$@"; do
     case "$arg" in
-        --format-all) FORMAT_ALL=true ;;
         --skip-tests) SKIP_TESTS=true ;;
         -h|--help)
-            sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -49,12 +44,9 @@ need clang-tidy-18 "install clang-tidy-18"
 need cppcheck "install cppcheck"
 need clang++-18 "install clang-18"
 
-if ! git rev-parse --verify --quiet "$BASE_REF^{commit}" >/dev/null; then
-    if git rev-parse --verify --quiet HEAD^ >/dev/null; then
-        BASE_REF="HEAD^"
-    else
-        BASE_REF="$(git hash-object -t tree /dev/null)"
-    fi
+if ! git rev-parse --verify --quiet HEAD >/dev/null; then
+    echo "not a git repository" >&2
+    exit 2
 fi
 
 stage "Configure ($BUILD_DIR)"
@@ -77,13 +69,8 @@ if [[ "$SKIP_TESTS" == false ]]; then
     "$BUILD_DIR/benchmarks" --benchmark_min_time=0.05s
 fi
 
-if [[ "$FORMAT_ALL" == true ]]; then
-    stage "Format (whole tree)"
-    ./scripts/ci/check-format.sh --all
-else
-    stage "Format (changed lines vs $BASE_REF)"
-    ./scripts/ci/check-format.sh "$BASE_REF"
-fi
+stage "Format (whole tree)"
+./scripts/ci/check-format.sh --all
 
 stage "Clang-Tidy"
 BUILD_DIR="$BUILD_DIR" ./scripts/ci/run-clang-tidy.sh

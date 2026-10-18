@@ -21,8 +21,7 @@ class MockBackend : public da3::backend::InferenceBackend {
         return input_shape;
     }
 
-    void run_inference(std::span<const float> /*input_data*/,
-                       const std::vector<int64_t> & /*input_shape*/) override {}
+    void run_inference(std::span<const float> /*input_data*/, const std::vector<int64_t> & /*input_shape*/) override {}
 
     [[nodiscard]] size_t get_output_count() const override { return output_data_.size(); }
 

@@ -245,14 +245,11 @@ struct FrameData {
 };
 
 /// Default pinhole focal length (px) when --focal is not passed: 1.2 * width.
-[[nodiscard]] inline float default_focal(int width) noexcept {
-    return 1.2f * static_cast<float>(width);
-}
+[[nodiscard]] inline float default_focal(int width) noexcept { return 1.2f * static_cast<float>(width); }
 
 /// Back-project a depth pixel with the pinhole model and transform by the
 /// frame pose: X=(u-cx)*Z/fx, Y=(v-cy)*Z/fy then p_world = R * p + t.
-inline void backproject_point(const FrameData &frame, int u, int v, float z, float &out_x, float &out_y,
-                              float &out_z) {
+inline void backproject_point(const FrameData &frame, int u, int v, float z, float &out_x, float &out_y, float &out_z) {
     const float fx = frame.intrinsics[0] > 0.0f ? frame.intrinsics[0] : 1.0f;
     const float fy = frame.intrinsics[1] > 0.0f ? frame.intrinsics[1] : 1.0f;
     const float cam_x = (static_cast<float>(u) - frame.intrinsics[2]) * z / fx;
@@ -312,8 +309,8 @@ inline void backproject_point(const FrameData &frame, int u, int v, float z, flo
 /// Back-project every frame's depth map into an ASCII PLY point cloud.
 /// COUNT = H*W*N over all non-empty frames.
 /// @param stride  Pixel subsampling (1 = every pixel; 2 = every 2nd row/col).
-[[nodiscard]] inline bool save_point_cloud_ply(const std::filesystem::path &path,
-                                               const std::vector<FrameData> &frames, int stride = 1) {
+[[nodiscard]] inline bool save_point_cloud_ply(const std::filesystem::path &path, const std::vector<FrameData> &frames,
+                                               int stride = 1) {
     const int step = stride > 0 ? stride : 1;
     std::size_t total = 0;
     for (const auto &frame : frames) {
@@ -372,8 +369,8 @@ inline void backproject_point(const FrameData &frame, int u, int v, float z, flo
 ///   x y z nx ny nz red green blue opacity scale_0..2 rot_0..rot_3
 /// opacity=1, scales from the local depth gradient (fallback 0.01*Z),
 /// normal +Z, rotation = identity quaternion.
-[[nodiscard]] inline bool save_gaussians_ply(const std::filesystem::path &path,
-                                             const std::vector<FrameData> &frames, int stride = 1) {
+[[nodiscard]] inline bool save_gaussians_ply(const std::filesystem::path &path, const std::vector<FrameData> &frames,
+                                             int stride = 1) {
     const int gstep = stride > 0 ? stride : 1;
     std::size_t total = 0;
     for (const auto &frame : frames) {
@@ -498,7 +495,7 @@ inline void backproject_point(const FrameData &frame, int u, int v, float z, flo
 } // namespace tasks
 
 /// Configuration for the Depth Anything 3 inference engine.
-struct Config {    /// Target resolution for the longest side of the input image (pixels).
+struct Config { /// Target resolution for the longest side of the input image (pixels).
     /// Images will be resized so the longest side equals this value, then
     /// rounded to the nearest multiple of patch_size.
     int process_res{504};
@@ -593,8 +590,7 @@ class DepthAnything3Inference {
     /// (the backend exposes indices + shapes, not names); @p pose is always
     /// filled (identity fallback), @p intrinsics only overridden on a match.
     /// @returns true when an extrinsics head was found.
-    [[nodiscard]] bool get_pose_view(size_t view, std::array<float, 12> &pose,
-                                     std::array<float, 4> &intrinsics) const;
+    [[nodiscard]] bool get_pose_view(size_t view, std::array<float, 12> &pose, std::array<float, 4> &intrinsics) const;
 
     /// Produce a visualizable BGR depth colormap from a raw depth cv::Mat.
     [[nodiscard]] static cv::Mat colorize_depth(const cv::Mat &depth_map);
@@ -625,9 +621,7 @@ class DepthAnything3Inference {
     /// a [3,3] intrinsics head). Both vectors are empty before the first
     /// run_inference() call; a backend that exposes no such outputs simply yields
     /// no matching shape, and callers fall back to identity pose.
-    [[nodiscard]] const std::vector<std::vector<float>> &get_raw_outputs() const noexcept {
-        return output_data_cache_;
-    }
+    [[nodiscard]] const std::vector<std::vector<float>> &get_raw_outputs() const noexcept { return output_data_cache_; }
     [[nodiscard]] const std::vector<std::vector<int64_t>> &get_raw_output_shapes() const noexcept {
         return output_shapes_cache_;
     }

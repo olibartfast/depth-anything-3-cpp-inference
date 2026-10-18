@@ -5,9 +5,9 @@
 #   check-format.sh <base>            working tree vs <base>
 #   check-format.sh --all             every tracked C++ source in src/ and tests/
 #
-# The default C++ check is deliberately incremental: this repository has
-# historic formatting drift, so the gate covers lines touched by a change.
-# Once the tree is clean, switch the workflow to --all.
+# The tree is formatted, so CI checks the whole tree with --all. The
+# changed-lines mode remains available for backports to branches with
+# historical formatting drift.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"

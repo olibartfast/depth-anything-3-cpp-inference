@@ -30,7 +30,7 @@ BENCHMARK(BM_PreprocessFrame);
 
 static void BM_ApplyDepthColormap(benchmark::State &state) {
     cv::Mat depth(504, 504, CV_32F);
-    cv::randu(depth, cv::Scalar(0.1f), cv::Scalar(10.0f));
+    cv::randu(depth, cv::Scalar(0.1), cv::Scalar(10.0));
 
     for (auto _ : state) {
         auto result = da3::processing::apply_depth_colormap(depth);

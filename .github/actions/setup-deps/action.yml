@@ -1,5 +1,15 @@
 name: Setup Dependencies
-description: Install common build dependencies and configure ccache
+description: Install C++ build dependencies, optional lint tools, and ccache
+
+inputs:
+  ccache-key:
+    description: Cache namespace; use a distinct key per compiler/job
+    required: false
+    default: default
+  lint-tools:
+    description: Install clang-format, clang-tidy, and cppcheck
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -7,10 +17,16 @@ runs:
     - name: Install dependencies
       shell: bash
       run: |
+        set -euo pipefail
+        packages=(cmake ninja-build ccache libopencv-dev clang-18)
+        if [ "${{ inputs.lint-tools }}" = "true" ]; then
+          packages+=(clang-format-18 clang-tidy-18 cppcheck)
+        fi
         sudo apt-get update
-        sudo apt-get install -y libopencv-dev
+        sudo apt-get install -y "${packages[@]}"
 
     - name: Set up ccache
       uses: hendrikmuhs/ccache-action@v1
       with:
-        key: ${{ github.job }}-${{ runner.os }}
+        key: ${{ inputs.ccache-key }}
+        max-size: 500M

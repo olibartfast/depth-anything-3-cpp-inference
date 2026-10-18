@@ -1,43 +1,251 @@
-name: Build & Test
+name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      format_scope:
+        description: "Format check scope"
+        type: choice
+        options:
+          - changed
+          - all
+        default: changed
+      strict_tidy:
+        description: "Treat every clang-tidy warning as an error"
+        type: boolean
+        default: false
+
+# Least privilege: CI only reads the repository. No secrets are used.
+permissions:
+  contents: read
+
+# A new push to a branch cancels the previous run for that branch.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build-and-test:
-    name: Build & Unit Tests
-    runs-on: ubuntu-latest
+  format:
+    name: Format (clang-format)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format-18
+
+      # Build a commit range so the check covers only lines touched by this
+      # change. Whole-tree formatting is available through workflow_dispatch.
+      - name: Resolve commit range
+        id: range
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="$PR_BASE_SHA"
+            head="$PR_HEAD_SHA"
+          elif [ "$EVENT_NAME" = "push" ] \
+            && [ -n "$BEFORE_SHA" ] \
+            && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            base="$BEFORE_SHA"
+            head="$GITHUB_SHA"
+            # Force-push safety: the previous tip may no longer exist.
+            if ! git cat-file -e "$base^{commit}" 2>/dev/null; then
+              if ! base="$(git merge-base origin/master "$head" 2>/dev/null)"; then
+                if ! base="$(git rev-parse "$head^" 2>/dev/null)"; then
+                  base="$(git hash-object -t tree /dev/null)"
+                fi
+              fi
+            fi
+          else
+            head="$(git rev-parse HEAD)"
+            if git rev-parse --verify --quiet HEAD^ >/dev/null; then
+              base="$(git rev-parse HEAD^)"
+            else
+              base="$(git hash-object -t tree /dev/null)"
+            fi
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+
+      - name: Check changed lines with clang-format
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.format_scope == 'changed' }}
+        run: ./scripts/ci/check-format.sh "${{ steps.range.outputs.base }}" "${{ steps.range.outputs.head }}"
+
+      - name: Check the whole tree with clang-format
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.format_scope == 'all' }}
+        run: ./scripts/ci/check-format.sh --all
+
+  build-test:
+    name: Build & Test (${{ matrix.compiler }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - compiler: clang
+            cc: clang-18
+            cxx: clang++-18
+          - compiler: gcc
+            cc: gcc
+            cxx: g++
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: ./.github/actions/setup-deps
+        with:
+          ccache-key: ${{ matrix.compiler }}
 
       - name: Configure
-        run: cmake -S . -B build -DBENCHMARKS=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DWERROR=ON \
+            -DBENCHMARKS=ON \
+            -DCMAKE_C_COMPILER=${{ matrix.cc }} \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Run unit tests
-        run: ctest --test-dir build --output-on-failure -R UnitTests
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure --output-junit test-results.xml
 
-      - name: Run benchmarks
-        run: ./build/benchmarks --benchmark_min_time=0.1s
+      - name: Benchmark smoke test
+        run: ./build/benchmarks --benchmark_min_time=0.05s
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.compiler }}
+          path: build/test-results.xml
+          if-no-files-found: warn
+          retention-days: 7
 
   sanitizers:
     name: Sanitizers (ASan + UBSan)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
       - uses: ./.github/actions/setup-deps
+        with:
+          ccache-key: sanitizers
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSANITIZERS=ON -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DSANITIZERS=ON \
+            -DWERROR=ON \
+            -DCMAKE_C_COMPILER=clang-18 \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
         run: cmake --build build --parallel
 
-      - name: Run unit tests under sanitizers
-        run: ctest --test-dir build --output-on-failure -R UnitTests
+      - name: Unit tests under sanitizers
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build --output-on-failure --output-junit test-results.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-sanitizers
+          path: build/test-results.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+  clang-tidy:
+    name: Clang-Tidy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-deps
+        with:
+          ccache-key: clang-tidy
+          lint-tools: "true"
+
+      - name: Configure for compile_commands.json
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_C_COMPILER=clang-18 \
+            -DCMAKE_CXX_COMPILER=clang++-18
+
+      - name: Run clang-tidy
+        env:
+          STRICT_TIDY: ${{ github.event_name == 'workflow_dispatch' && inputs.strict_tidy || false }}
+        run: ./scripts/ci/run-clang-tidy.sh
+
+      - name: Upload clang-tidy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang-tidy-report
+          path: build/clang-tidy.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  cppcheck:
+    name: Cppcheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-deps
+        with:
+          lint-tools: "true"
+
+      - name: Run cppcheck
+        run: ./scripts/ci/run-cppcheck.sh
+
+      - name: Upload cppcheck report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cppcheck-report
+          path: build/cppcheck.log
+          if-no-files-found: warn
+          retention-days: 7
+
+  # Single required status check for branch protection. It fails when any
+  # blocking job fails, and writes a compact result table to the run summary.
+  quality-gate:
+    name: Quality Gate
+    if: always()
+    needs: [format, build-test, sanitizers, clang-tidy, cppcheck]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Evaluate quality gate
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python3 scripts/ci/quality_gate.py

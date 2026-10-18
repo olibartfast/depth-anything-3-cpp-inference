@@ -143,7 +143,7 @@ TEST(PreprocessFrame, BufferTooSmall) {
 
 TEST(ApplyDepthColormap, OutputIsRGB) {
     cv::Mat depth(100, 100, CV_32F);
-    cv::randu(depth, cv::Scalar(0.5f), cv::Scalar(10.0f));
+    cv::randu(depth, cv::Scalar(0.5), cv::Scalar(10.0));
     cv::Mat colored = da3::processing::apply_depth_colormap(depth);
     EXPECT_EQ(colored.rows, 100);
     EXPECT_EQ(colored.cols, 100);
@@ -152,7 +152,7 @@ TEST(ApplyDepthColormap, OutputIsRGB) {
 
 TEST(ApplyDepthColormap, UniformDepth) {
     // All-same depth should not crash
-    cv::Mat depth(50, 50, CV_32F, cv::Scalar(5.0f));
+    cv::Mat depth(50, 50, CV_32F, cv::Scalar(5.0));
     EXPECT_NO_THROW({ auto _ = da3::processing::apply_depth_colormap(depth); });
 }
 
@@ -272,12 +272,12 @@ TEST_F(InferenceTest, PostprocessWithConf) {
 
 TEST_F(InferenceTest, PostprocessWithoutRunning) {
     auto inf = make_inference();
-    EXPECT_THROW(inf->postprocess_outputs(36, 48, 100, 200, false), std::runtime_error);
+    EXPECT_THROW({ (void)inf->postprocess_outputs(36, 48, 100, 200, false); }, std::runtime_error);
 }
 
 TEST_F(InferenceTest, ColorizerDepth) {
     cv::Mat depth(100, 100, CV_32F);
-    cv::randu(depth, cv::Scalar(0.1f), cv::Scalar(10.0f));
+    cv::randu(depth, cv::Scalar(0.1), cv::Scalar(10.0));
     cv::Mat vis = DepthAnything3Inference::colorize_depth(depth);
     EXPECT_EQ(vis.rows, 100);
     EXPECT_EQ(vis.cols, 100);
@@ -329,7 +329,7 @@ TEST(MockBackend, OutOfRangeThrows) {
     MockBackend backend;
     backend.set_outputs({}, {});
 
-    EXPECT_THROW(backend.get_output_shape(0), std::out_of_range);
+    EXPECT_THROW({ (void)backend.get_output_shape(0); }, std::out_of_range);
     std::vector<float> out(4);
     EXPECT_THROW(backend.get_output_data(0, out.data(), 4), std::out_of_range);
 }
@@ -511,7 +511,7 @@ namespace {
 // Build a real FrameData for the PLY writer tests.
 tasks::FrameData make_test_frame(int rows, int cols, float depth_value) {
     tasks::FrameData frame;
-    frame.depth = cv::Mat(rows, cols, CV_32F, cv::Scalar(depth_value));
+    frame.depth = cv::Mat(rows, cols, CV_32F, cv::Scalar(static_cast<double>(depth_value)));
     frame.image_bgr = cv::Mat(rows, cols, CV_8UC3, cv::Scalar(10, 20, 30));
     frame.pose = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
     const float fx = tasks::default_focal(cols);
@@ -627,13 +627,13 @@ TEST(BatchInference, RunAndSliceViews) {
     EXPECT_FLOAT_EQ(v1.depth.at<float>(0, 0), 7.0f);
     EXPECT_FLOAT_EQ(v1.depth.at<float>(1, 2), 12.0f);
     EXPECT_FALSE(v0.conf.empty());
-    EXPECT_THROW(inf->postprocess_view(2, 2, 3, 2, 3, false), std::runtime_error);
+    EXPECT_THROW({ (void)inf->postprocess_view(2, 2, 3, 2, 3, false); }, std::runtime_error);
 }
 
 TEST(BatchInference, EmptyThrows) {
     auto inf = make_batch_inference();
     EXPECT_THROW(inf->run_inference_batch({}, 2, 3), std::invalid_argument);
-    EXPECT_THROW(inf->postprocess_view(0, 2, 3, 2, 3, false), std::runtime_error);
+    EXPECT_THROW({ (void)inf->postprocess_view(0, 2, 3, 2, 3, false); }, std::runtime_error);
 }
 
 TEST(BatchPoseView, PerViewExtrinsicsAndK) {
@@ -667,8 +667,9 @@ TEST(BatchPoseView, IdentityWithoutHead) {
     EXPECT_FLOAT_EQ(intr[0], 1.0f); // untouched without a head
 }
 
-TEST(PlyStride, Subsamples) {    tasks::FrameData frame;
-    frame.depth = cv::Mat(4, 4, CV_32F, cv::Scalar(2.0f));
+TEST(PlyStride, Subsamples) {
+    tasks::FrameData frame;
+    frame.depth = cv::Mat(4, 4, CV_32F, cv::Scalar(2.0));
     frame.image_bgr = cv::Mat(4, 4, CV_8UC3, cv::Scalar(1, 2, 3));
     frame.pose = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
     frame.intrinsics = {100, 100, 2, 2};

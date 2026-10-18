@@ -1,7 +1,7 @@
 # Tech Stack — Depth Anything 3 C++ Inference
 
 ## Fixed (must not be changed per feature)
-- Language: C++20 (Clang 15+/GCC 12+, CI uses clang-18)
+- Language: C++20 (Clang 15+/GCC 12+, CI builds with clang-18 and GCC)
 - Build: CMake >=3.12, Ninja recommended; `da3_inference_lib` static + `inference_app` + `unit_tests`
 - Libs: OpenCV 4.x (`core, imgproc, imgcodecs, highgui`), Threads
 - Backends (compile-time, exactly one): ONNX Runtime 1.21.0 auto-download (Linux/Win/macOS, CPU/GPU) OR TensorRT 11.2.1.2 auto-download + CUDA 13.3 toolkit (Linux+NVIDIA only; same pin as rf-detr-cpp-inference)

@@ -32,7 +32,7 @@ Other useful upstream links:
 - [Technical Details](#technical-details)
 - [Testing](#testing)
 - [Docker](#docker)
-- [Code Quality Tools](#code-quality-tools)
+- [Continuous Integration](#continuous-integration)
 - [Acknowledgements](#acknowledgements)
 
 ---
@@ -448,14 +448,50 @@ docker run -v $(pwd)/data:/data da3-onnx /data/model.onnx /data/image.jpg
 
 ---
 
-## Code Quality Tools
+## Continuous Integration
+
+GitHub Actions runs `.github/workflows/ci.yml` for pushes and pull requests targeting `master`, plus manual dispatch. Every job is blocking and feeds a single `Quality Gate` status; require that check in the `master` branch protection rule.
+
+| Job | What it enforces |
+|-----|------------------|
+| `Format` | `clang-format-18` on lines changed by the push/PR; whole-tree audit via manual dispatch |
+| `Build & Test (clang, gcc)` | Release build with `-DWERROR=ON`, unit tests, benchmark smoke test |
+| `Sanitizers` | Debug build with ASan + UBSan, unit tests |
+| `Clang-Tidy` | `clang-analyzer-*` and `bugprone-*` findings fail; the full configured report is uploaded as an artifact |
+| `Cppcheck` | `warning`, `performance`, and `portability` findings fail |
+| `Quality Gate` | Aggregates the jobs above; required status check |
+
+The gate fails closed: a skipped or cancelled dependency is a failure, not a pass. Branch protection is a repository setting, not a file: **Settings → Branches → Add rule for `master` → Require status checks → `Quality Gate`**.
+
+The format job is incremental because this tree has historic formatting drift. Format any file you touch with `clang-format-18 -i`; the gate then covers your changed lines. To audit or clean the whole tree:
+
+```bash
+scripts/ci/check-format.sh --all
+clang-format-18 -i $(find src tests -type f \( -name '*.cpp' -o -name '*.hpp' \))
+```
+
+For the full audit path, run the workflow manually with `format_scope=all` and/or `strict_tidy=true` (Actions → CI → Run workflow).
+
+### Local Quality Run
+
+The same blocking checks run locally, using a separate `build-ci` directory:
+
+```bash
+scripts/ci/run_quality.sh              # changed-lines format + build + tests + tidy + cppcheck
+scripts/ci/run_quality.sh --skip-tests # skip ctest only
+scripts/ci/run_quality.sh --format-all # audit formatting across the tree
+```
+
+### Individual Tools
 
 | Tool | Purpose | How to run |
 |------|---------|------------|
-| `clang-format-18` | Code formatting | `find src tests -name '*.cpp' -o -name '*.hpp' \| xargs clang-format-18 -i` |
-| `clang-tidy-18` | Static analysis | `find src -name '*.cpp' \| xargs clang-tidy-18 -p build` |
-| `cppcheck` | Flow-based static analysis | `cppcheck --enable=all --std=c++20 -I src src/` |
+| `clang-format-18` | Code formatting | `scripts/ci/check-format.sh --all` (check) or `clang-format-18 -i <files>` (fix) |
+| `clang-tidy-18` | Static analysis | `scripts/ci/run-clang-tidy.sh` (requires `build/compile_commands.json`) |
+| `cppcheck` | Flow-based static analysis | `scripts/ci/run-cppcheck.sh` |
 | AddressSanitizer + UBSan | Runtime memory/UB detection | `-DSANITIZERS=ON` at configure time |
+
+`clang-tidy` uses the full check set from `.clang-tidy`, but only `clang-analyzer-*` and `bugprone-*` are blocking by default; the other configured checks are reported in `build/clang-tidy.log`. Override locally with `TIDY_WARNINGS_AS_ERRORS=<glob>` or `STRICT_TIDY=true`. The TensorRT backend is excluded because the default configure does not install TensorRT.
 
 ---
 

@@ -481,7 +481,7 @@ inline void backproject_point(const FrameData &frame, int u, int v, float z, flo
         if (static_cast<double>(i) + 0.5 < static_cast<double>(next_keep)) {
             continue;
         }
-        next_keep = static_cast<size_t>(static_cast<double>(i) + step + 0.5);
+        next_keep = static_cast<size_t>(std::lround(static_cast<double>(i) + step));
         char name[32];
         std::snprintf(name, sizeof(name), "%03zu.jpg", written);
         if (!cv::imwrite((out_dir / name).string(), frame)) {

@@ -1,0 +1,14 @@
+.git
+.gitignore
+build
+build-*
+output
+__pycache__
+*.pyc
+.venv
+*.pt
+*.pth
+*.onnx
+!tests/fixtures/tiny_depth.onnx
+*.engine
+*.trt

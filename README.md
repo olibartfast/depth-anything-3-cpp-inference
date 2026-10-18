@@ -461,13 +461,14 @@ GitHub Actions runs `.github/workflows/ci.yml` for pushes and pull requests targ
 | `Cppcheck` | `warning`, `performance`, and `portability` findings fail |
 | `Coverage` | gcov line coverage floor on the tested library surface, plus diff coverage on changed lines |
 | `Benchmark regression` | Google Benchmark medians compared with the stored `gh-pages` baseline; over 50% slower fails |
+| `Docker build` | Builds the multi-stage image on Ubuntu 24.04 and smoke-tests `inference_app --help` |
 | `Quality Gate` | Aggregates the jobs above; required status check |
 
 The gate fails closed: a skipped or cancelled dependency is a failure, not a pass. Branch protection is a repository setting, not a file: `master` currently requires `Quality Gate` with up-to-date branches, and blocks force pushes and deletions. Direct pushes by admins are still possible; enable “Require a pull request before merging” in **Settings → Branches** to block those too.
 
 The coverage gate is calibrated to the model-free test surface: it enforces 80% line coverage on `depth_anything3_inference`, `processing_utils`, and both backend implementations, plus 70% diff coverage on changed lines. The ONNX Runtime backend is exercised end-to-end with `tests/fixtures/tiny_depth.onnx` (216 bytes), so CI needs no model weights. `main.cpp` is reported but not gated until CLI tests exist.
 
-Benchmark data is stored in the `gh-pages` branch by `github-action-benchmark`. Pushes to `master` update the baseline; pull requests compare against it and fail at 150% of the stored median. The threshold is deliberately loose because hosted runners are noisy; tighten it after collecting stable history.
+Benchmark data is stored in the `gh-pages` branch by `github-action-benchmark`. Pushes to `master` update the baseline; pull requests compare against it and fail at 150% of the stored median. The threshold is deliberately loose because hosted runners are noisy; tighten it after collecting stable history. The dashboard is at <https://olibartfast.ninja/depth-anything-3-cpp-inference/benchmarks/> (the site root redirects there).
 
 The format job is incremental because this tree has historic formatting drift. Format any file you touch with `clang-format-18 -i`; the gate then covers your changed lines. To audit or clean the whole tree:
 

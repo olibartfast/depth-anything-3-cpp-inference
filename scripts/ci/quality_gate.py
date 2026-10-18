@@ -11,7 +11,7 @@ import json
 import os
 import sys
 
-ORDER = ["format", "build-test", "sanitizers", "clang-tidy", "cppcheck", "coverage", "benchmark"]
+ORDER = ["format", "build-test", "sanitizers", "clang-tidy", "cppcheck", "coverage", "benchmark", "docker"]
 
 
 def main() -> int:

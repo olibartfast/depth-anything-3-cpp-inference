@@ -16,9 +16,7 @@
 
 namespace {
 
-std::filesystem::path tiny_model() {
-    return std::filesystem::path(DA3_TEST_FIXTURE_DIR) / "tiny_depth.onnx";
-}
+std::filesystem::path tiny_model() { return std::filesystem::path(DA3_TEST_FIXTURE_DIR) / "tiny_depth.onnx"; }
 
 } // namespace
 
@@ -84,13 +82,11 @@ TEST(OnnxBackend, HighLevelInferenceUsesModel) {
     ASSERT_EQ(result.depth.cols, orig_w);
 
     // The fixture returns the mean of the normalized RGB channels.
-    const auto normalized = [](float channel, float mean, float stddev) {
-        return (channel / 255.0f - mean) / stddev;
-    };
-    const float expected = (normalized(30.0f, config.means[0], config.stds[0]) +
-                            normalized(20.0f, config.means[1], config.stds[1]) +
-                            normalized(10.0f, config.means[2], config.stds[2])) /
-                           3.0f;
+    const auto normalized = [](float channel, float mean, float stddev) { return (channel / 255.0f - mean) / stddev; };
+    const float expected =
+        (normalized(30.0f, config.means[0], config.stds[0]) + normalized(20.0f, config.means[1], config.stds[1]) +
+         normalized(10.0f, config.means[2], config.stds[2])) /
+        3.0f;
     for (int row = 0; row < result.depth.rows; ++row) {
         for (int col = 0; col < result.depth.cols; ++col) {
             EXPECT_NEAR(result.depth.at<float>(row, col), expected, 1e-5f);

@@ -291,12 +291,75 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  benchmark:
+    name: Benchmark regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-deps
+        with:
+          ccache-key: benchmark
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBENCHMARKS=ON \
+            -DWERROR=ON \
+            -DCMAKE_C_COMPILER=clang-18 \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build benchmarks
+        run: cmake --build build --target benchmarks --parallel
+
+      - name: Run benchmark suite
+        run: |
+          ./build/benchmarks \
+            --benchmark_min_time=0.2s \
+            --benchmark_repetitions=5 \
+            --benchmark_report_aggregates_only=true \
+            --benchmark_out=build/benchmark.json \
+            --benchmark_out_format=json
+
+      - name: Convert benchmark results
+        run: python3 scripts/ci/benchmark-to-json.py build/benchmark.json build/benchmark-action.json
+
+      - name: Compare with stored baseline
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: customSmallerIsBetter
+          output-file-path: build/benchmark-action.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: benchmarks
+          alert-threshold: '150%'
+          fail-on-alert: true
+          comment-on-alert: false
+          summary-always: true
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-results
+          path: |
+            build/benchmark.json
+            build/benchmark-action.json
+          if-no-files-found: warn
+          retention-days: 7
+
   # Single required status check for branch protection. It fails when any
   # blocking job fails, and writes a compact result table to the run summary.
   quality-gate:
     name: Quality Gate
     if: always()
-    needs: [format, build-test, sanitizers, clang-tidy, cppcheck, coverage]
+    needs: [format, build-test, sanitizers, clang-tidy, cppcheck, coverage, benchmark]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

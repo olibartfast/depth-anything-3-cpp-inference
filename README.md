@@ -460,11 +460,14 @@ GitHub Actions runs `.github/workflows/ci.yml` for pushes and pull requests targ
 | `Clang-Tidy` | `clang-analyzer-*` and `bugprone-*` findings fail; the full configured report is uploaded as an artifact |
 | `Cppcheck` | `warning`, `performance`, and `portability` findings fail |
 | `Coverage` | gcov line coverage floor on the tested library surface, plus diff coverage on changed lines |
+| `Benchmark regression` | Google Benchmark medians compared with the stored `gh-pages` baseline; over 50% slower fails |
 | `Quality Gate` | Aggregates the jobs above; required status check |
 
 The gate fails closed: a skipped or cancelled dependency is a failure, not a pass. Branch protection is a repository setting, not a file: `master` currently requires `Quality Gate` with up-to-date branches, and blocks force pushes and deletions. Direct pushes by admins are still possible; enable “Require a pull request before merging” in **Settings → Branches** to block those too.
 
 The coverage gate is calibrated to the model-free test surface: it enforces 80% line coverage on `depth_anything3_inference`, `processing_utils`, and `inference_backend`, plus 70% diff coverage on changed lines. `main.cpp` and the ONNX Runtime backend are reported but not gated until CLI and real-model tests exist.
+
+Benchmark data is stored in the `gh-pages` branch by `github-action-benchmark`. Pushes to `master` update the baseline; pull requests compare against it and fail at 150% of the stored median. The threshold is deliberately loose because hosted runners are noisy; tighten it after collecting stable history.
 
 The format job is incremental because this tree has historic formatting drift. Format any file you touch with `clang-format-18 -i`; the gate then covers your changed lines. To audit or clean the whole tree:
 
@@ -489,6 +492,17 @@ Coverage needs `gcovr` and `diff-cover` on `PATH` (for example in a virtualenv),
 
 ```bash
 scripts/ci/run-coverage.sh
+```
+
+For a local benchmark run with the same median-of-five format:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBENCHMARKS=ON
+cmake --build build --target benchmarks --parallel
+./build/benchmarks --benchmark_min_time=0.2s --benchmark_repetitions=5 \
+  --benchmark_report_aggregates_only=true \
+  --benchmark_out=build/benchmark.json --benchmark_out_format=json
+python3 scripts/ci/benchmark-to-json.py build/benchmark.json build/benchmark-action.json
 ```
 
 ### Individual Tools

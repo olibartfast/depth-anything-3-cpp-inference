@@ -1,26 +1,34 @@
 # Mission — Depth Anything 3 C++ Inference
 
-## Problem
-Python DA3 is research-first; C++/edge/robotics users need a small, backend-portable inference engine (ONNX Runtime / TensorRT + OpenCV) without Python at runtime.
+Depth Anything 3 (DA3) is a research-first Python project. This repository provides a small C++ inference engine for teams that need monocular depth estimation on CPUs, GPUs, edge devices, or robots without a Python runtime. The engine uses OpenCV for image I/O and supports exactly one compile-time inference backend: ONNX Runtime (ORT) or TensorRT (TRT).
 
-## Audience
-For: C++ developers shipping monocular depth on CPU/GPU, ROS/edge, offline batch tools.
-Explicitly not for: training, model research, in-browser viewers, full any-view SLAM/3DGS pipelines (yet).
+## Who this is for
 
-## Product Promise
-Single-image depth + confidence from any DA3-monocular ONNX export with preprocessing parity to upstream Python, one compile-time backend, reproducible Docker/C++ tests. Any-view (multi-view, pose, metric-nested, streaming) is documented as a follow-on, not smuggled into this slice.
+The primary audience is C++ developers shipping monocular depth on CPU or GPU, including ROS and edge deployments and offline batch tools.
 
-## Success Criteria
-- Monocular ONNX from `export_onnx.py` runs in C++ and reproduces upstream preprocessing (longest-side + patch-14 + ImageNet norm).
-- Upstream refs are traceable: official site, GitHub, HF DA3 collection, HF camera-depth-models collection, citation, licenses.
-- `ctest -R UnitTests` passes with no model file.
+This project is explicitly not for training, model research, in-browser viewers, or full any-view SLAM and 3D Gaussian Splatting (3DGS) pipelines.
 
-## Product Principles
-- Parity before expansion: match upstream observable behavior first.
-- One backend at a time; deny-by-default paths in handoffs.
-- Thin slices with runnable output; validation before code.
+## Product promise
 
-## Open Questions
-- [Q-1] Any-view C++ API shape (N-view tensors, pose I/O) — owner: maintainer, resolve before Phase 3 spike.
+The library produces single-image depth and confidence from any DA3 monocular ONNX export, with preprocessing that matches the upstream Python implementation. It offers one compile-time backend and reproducible Docker and C++ tests.
 
-_Revision: 2026-10-11 — initial constitution from official site + GitHub + HF collections._
+Any-view capabilities — multi-view input, pose estimation, metric-nested models, and streaming — are documented as a follow-on. They are not part of this slice.
+
+## Success criteria
+
+- A monocular ONNX model exported by `export_onnx.py` runs in C++ and reproduces upstream preprocessing: longest-side resize, patch-14 alignment, and ImageNet normalization.
+- Upstream references remain traceable: the official site, GitHub repository, Hugging Face DA3 collection, Hugging Face camera-depth-models collection, citation, and licenses.
+- `ctest -R UnitTests` passes without a downloaded model file.
+
+## Principles
+
+- **Parity before expansion.** Match upstream observable behavior before adding new capabilities.
+- **One backend at a time.** Each binary selects ONNX Runtime or TensorRT at compile time.
+- **Safe handoffs.** Default to read-only paths unless write access is explicitly granted.
+- **Thin, runnable slices.** Prefer small changes with runnable output, and validate before writing code.
+
+## Open questions
+
+- **Any-view C++ API shape (Q-1).** The canonical representation for N-view tensors and pose I/O is still open. Owner: maintainer. Resolve before the Phase 3 spike.
+
+_Revision: 2026-10-11 — initial constitution based on the official site, GitHub repository, and Hugging Face collections._

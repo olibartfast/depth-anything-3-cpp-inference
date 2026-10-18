@@ -1,38 +1,28 @@
-# Requirements — DA3 Colab GPU Gate (Phase C)
+# Requirements — DA3 Colab GPU Gate
 
-Spec: `specs/2026-10-13-da3-colab-gate/` · Branch: `spec/da3-colab-gate`
+This packet authors the user-runnable Colab notebook that closes the pending Colab portion of the GPU-gate runbook. The full GPU-gate context is in [the GPU-gate requirements](../2026-10-11-da3-gpu-gate/requirements.md).
 
-## Goal
-Author the user-runnable Colab notebook that closes the GPU-gate runbook's pending Colab-partial item.
-
-## In Scope
-- [R-1] `docs/colab-inference.ipynb` (or `notebooks/`): install (cmake, opencv, CUDA toolkit note for TRT path OR ORT-only CPU/GPU path), clone this repo at the current branch, configure + build, download a Small ONNX (or export), run `--task mono` + `--task pose` on sample images, display outputs. ORT path must work on stock Colab GPU runtime; TRT path documented as best-effort (needs matching CUDA/TRT pin).
-- [R-2] Runbook update in `specs/2026-10-11-da3-gpu-gate/gpu-validation-runbook.md` (or validation.md here) marking notebook authored; execution evidence stays PENDING-USER-RUN with exact steps to paste back.
-
-## Out of Scope
-- Executing Colab here (impossible); merge to master.
-
-## Validation
-| ID | Check |
-|----|-------|
-| V-1 | `jupyter nbconvert --to notebook --execute` dry-run of non-GPU cells where possible, else `json` validity + cell review checklist |
-| V-2 | Runbook updated with user-run instructions |
-
-# Requirements — DA3 Deferred Revisit (Phase D)
-
-Spec: `specs/2026-10-13-da3-deferred-revisit/` · Branch: `spec/da3-deferred-revisit`
+- **Spec:** `specs/2026-10-13-da3-colab-gate/`
+- **Branch:** `spec/da3-colab-gate`
 
 ## Goal
-Leave nothing silently deferred: video input, F-2 follow-through (if not done in B), 3DGS-head/SLAM/BENCH verdicts.
 
-## In Scope
-- [R-1] Video input: `--input-video PATH --fps K` (ffmpeg extract to temp dir → reuse multiview dir loop) OR documented refusal with reason. Attempt ffmpeg-based; OpenCV `VideoCapture` needs no new dep (opencv videoio present? verify — `imgcodecs/highgui` only in CMake; if videoio missing, doc-only + blocked reason).
-- [R-2] 3DGS-head verdict: attempt gsplat install + `--task gaussian` export probe; record WORKS or BLOCKED (weights/head availability) with reason.
-- [R-3] SLAM-Long / Gradio parity / DA3-BENCH: explicit keep-or-drop decision per item with one-paragraph rationale in validation.md (a decision is an outcome, not a deferral).
+Produce a Colab notebook that installs the build dependencies, builds this repository, exports a small model, and runs the ORT inference path on a stock Colab GPU runtime. The TensorRT path is documented as best-effort because it needs an exact CUDA and TensorRT pin.
+
+## In scope
+
+- **Notebook.** Create `docs/colab-inference.ipynb` (or place it under `notebooks/`). It must install CMake and OpenCV, note the CUDA toolkit requirement for the TensorRT path, and support the ORT-only CPU or GPU path. It must clone the current branch, configure and build, download or export a Small ONNX model, run `--task mono` and `--task pose` on sample images, and display the outputs. The ORT path must work on a stock Colab GPU runtime. The TensorRT path is best-effort and must state its CUDA and TensorRT pin. (R-1)
+- **Runbook update.** Update `specs/2026-10-11-da3-gpu-gate/gpu-validation-runbook.md` (or this packet’s validation document) to mark the notebook as authored. Execution evidence remains `PENDING-USER-RUN`, with exact steps for pasting results back. (R-2)
+
+## Out of scope
+
+- Executing the notebook here. That is impossible in this environment.
+- Merging to `master`.
+
+## Related deferred work
+
+The video-input, 3DGS-head, and keep-or-drop work moved to [Deferred revisit](../2026-10-13-da3-deferred-revisit/requirements.md). That packet carries the deferred requirements (R-1 through R-3) and checks (V-1 through V-3) from the original combined draft, including the F-2 follow-up. The Colab checks remain here.
 
 ## Validation
-| ID | Check |
-|----|-------|
-| V-1 | Video path exercised on a sample mp4 (or refusal documented + tested at parse level) |
-| V-2 | gsplat probe outcome recorded |
-| V-3 | Keep/drop table filled |
+
+The acceptance checks and their current status are in [validation.md](validation.md): V-1 covers notebook validity and cell review, and V-2 covers the runbook update.

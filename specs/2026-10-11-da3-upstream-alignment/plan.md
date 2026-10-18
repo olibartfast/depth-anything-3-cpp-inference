@@ -1,23 +1,38 @@
 # Plan — DA3 Upstream Alignment
 
-## Group 1 — Constitution (done this branch)
-- [T-1] Write `specs/mission.md`, `tech-stack.md`, `roadmap.md` — Deliverable: three short files matching templates
-  - Checks: `ls specs && ls specs/2026-10-11-da3-upstream-alignment`
+This plan delivers the [requirements](requirements.md) in four independently reviewable groups. The validation steps are in [validation.md](validation.md).
 
-## Group 2 — Docs traceability (next, isolated)
-- [T-2] README sync: official site link, GitHub link, citation, HF both collections, model table with `-1.1` + licenses + metric note — Deliverable: README diff only, no code change
-  - Checks: `git diff --stat`, manual link click-through (V-2..V-4)
+## Group 1 — Constitution
 
-## Group 3 — Parity verification (read-only + tests)
-- [T-3] Verify `export_onnx.py` vs `src/*` parity notes in packet — Deliverable: requirements R-4 evidence, no behavior change
-  - Checks: `ctest --test-dir build --output-on-failure -R UnitTests`
-- [T-4] Add metric-scaling unit test helper (Phase 2 thin slice) — Deliverable: `focal * x / 300` covered, Nested passthrough noted
-  - Checks: focused gtest run
+The constitution was completed on this branch.
 
-## Group 4 — Verification
-- [T-5] Execute `validation.md` automated + manual checks, record evidence with dates
-- [T-6] Update roadmap status + changelog/docs, report deviations
+| ID | Task | Deliverable | Check |
+|---|---|---|---|
+| T-1 | Write the mission, tech stack, and roadmap documents. | Three short files matching the project templates. | `ls specs && ls specs/2026-10-11-da3-upstream-alignment` |
+
+## Group 2 — Documentation traceability
+
+This group changes documentation only. It must not touch `src/`.
+
+| ID | Task | Deliverable | Check |
+|---|---|---|---|
+| T-2 | Synchronize the README: official site, GitHub, citation, both Hugging Face collections, the model table with `-1.1` and licenses, and the metric note. | A README-only diff. | `git diff --stat`; manual link click-through for V-2 through V-4. |
+
+## Group 3 — Parity verification
+
+| ID | Task | Deliverable | Check |
+|---|---|---|---|
+| T-3 | Verify the parity notes between `export_onnx.py` and `src/*`, and record the evidence against R-4. | Requirements evidence; no behavior change. | `ctest --test-dir build --output-on-failure -R UnitTests` |
+| T-4 | Add a metric-scaling unit test as the Phase 2 thin slice. | Coverage for `focal * x / 300`, including the Nested passthrough note. | Focused GoogleTest run. |
+
+## Group 4 — Verification and close-out
+
+| ID | Task |
+|---|---|
+| T-5 | Execute the automated and manual checks in [validation.md](validation.md) and record dated evidence. |
+| T-6 | Update the roadmap status and changelog, and report any deviations. |
 
 ## Notes
-- Keep groups independently reviewable; T-2 must not touch `src/`; T-4 must not change backend ABI.
-- Orchestration: T-2/T-3 are cheap/local-tier worker packets with read-only acceptance suite, one acceptance run, deny-by-default writes (see handoff in validation notes).
+
+- Keep the groups independently reviewable. T-2 must not touch `src/`, and T-4 must not change the backend ABI.
+- Orchestration: T-2 and T-3 are small, local worker packets with a read-only acceptance suite, one acceptance run, and deny-by-default write access. The handoff details are in [validation.md](validation.md).

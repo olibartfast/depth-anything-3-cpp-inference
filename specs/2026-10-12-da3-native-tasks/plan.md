@@ -1,23 +1,46 @@
 # Plan — DA3 Native Tasks CLI
 
-## Phases (thin, each runnable)
-### Phase A — Task enum + CLI parse + help (walk)
-Deliver: `TaskType` in `depth_anything3_inference.hpp`, `parse_task`/`task_to_string`/`recommended_checkpoint`, `main.cpp --task/--focal/--input-dir/--output-dir/--already-metric/--use-ray-pose/--help` wired; default `mono` keeps old invocations working.
-Tasks: A1 header enum+helpers, A2 main arg parse + usage, A3 README usage snippet.
+The work is split into three thin stages, each producing a runnable result. The acceptance checks are in [validation.md](validation.md).
 
-### Phase B — Metric + multiview loop (run)
-Deliver: `--focal` scaling via `metric_depth_from_relative`, `--already-metric` skip; dir glob helper `collect_image_paths`, per-frame loop saving indexed outputs.
-Tasks: B1 metric wiring, B2 multiview input+loop, B3 export script `--task mono/metric/multiview` names.
+## Stage A — Task enum, CLI parsing, and help
 
-### Phase C — Pose + reconstruction + gaussian files (run)
-Deliver: `poses.txt`/`intrinsics.txt` writers (identity fallback + model-output extraction by name when available), depth→cloud `save_ply`, gaussians `save_gaussian_ply`; export script `--task pose/reconstruction/gaussian` + `--use-ray-pose` passthrough.
-Tasks: C1 pose I/O, C2 PLY cloud, C3 gaussian PLY, C4 export modes, C5 unit tests (R-8).
+Add `TaskType` to `depth_anything3_inference.hpp`, along with `parse_task`, `task_to_string`, and `recommended_checkpoint`. Wire `main.cpp` for `--task`, `--focal`, `--input-dir`, `--output-dir`, `--already-metric`, `--use-ray-pose`, and `--help`. The default `mono` task keeps old invocations working.
+
+| ID | Task |
+|---|---|
+| A1 | Add the task enum and helper functions to the header. |
+| A2 | Add argument parsing and usage text to `main.cpp`. |
+| A3 | Add a README usage snippet. |
+
+## Stage B — Metric and multi-view processing
+
+Wire `--focal` scaling through `metric_depth_from_relative` and support `--already-metric`. Add the `collect_image_paths` directory helper and the per-frame loop that writes indexed outputs.
+
+| ID | Task |
+|---|---|
+| B1 | Wire metric scaling. |
+| B2 | Add multi-view input and the per-frame loop. |
+| B3 | Extend the export script with `--task mono`, `metric`, and `multiview`, including output names. |
+
+## Stage C — Pose, reconstruction, and Gaussian files
+
+Write `poses.txt` and `intrinsics.txt`, with identity fallback and model-output extraction when available. Add the depth-to-cloud `save_ply` writer and the Gaussian `save_gaussian_ply` writer. Extend the export script with `--task pose`, `reconstruction`, and `gaussian`, plus `--use-ray-pose` passthrough.
+
+| ID | Task |
+|---|---|
+| C1 | Add pose I/O. |
+| C2 | Add the point-cloud PLY writer. |
+| C3 | Add the Gaussian PLY writer. |
+| C4 | Add the export modes. |
+| C5 | Add unit tests for R-8. |
 
 ## Integration checkpoints
-- After A: `cmake --build build && ./build/inference_app --help` shows tasks; `ctest -R UnitTests` passes.
-- After B+C: full `validation.md` V-1..V-8 green.
 
-## Task groups for delegation (orchestration skill)
-- Packet 1 (implementer): Phase A+B — writable `src/*`, read-only `tests/unit/mock_backend.hpp`, `src/backends/*`; acceptance: build + `ctest -R UnitTests`.
-- Packet 2 (implementer): Phase C + `export_onnx.py` — same paths + `export_onnx.py`; acceptance: same + `python3 -m py_compile export_onnx.py`.
-- Reviewer: read-only diff review vs `requirements.md` R-1..R-8, zero writes.
+- After Stage A, `cmake --build build && ./build/inference_app --help` shows the tasks, and `ctest -R UnitTests` passes.
+- After Stages B and C, checks V-1 through V-8 in [validation.md](validation.md) are green.
+
+## Delegation groups
+
+- **Implementation packet 1:** Stages A and B. Writable paths are `src/*`; read-only paths are `tests/unit/mock_backend.hpp` and `src/backends/*`. Acceptance: build plus `ctest -R UnitTests`.
+- **Implementation packet 2:** Stage C and `export_onnx.py`. Writes are limited to the same paths plus `export_onnx.py`. Acceptance: the same tests plus `python3 -m py_compile export_onnx.py`.
+- **Reviewer:** Read-only diff review against R-1 through R-8 in [requirements.md](requirements.md). No writes.

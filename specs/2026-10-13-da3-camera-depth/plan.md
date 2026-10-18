@@ -1,24 +1,32 @@
-# Plan — DA3 Camera-Depth (Phase A)
+# Plan — DA3 Camera-Depth and Export Shape-Lock
 
-## Phases (thin)
-### A1 — `--camera` preset + checkpoint map
-`parse_camera`/`camera_to_string`/`camera_checkpoint` in header; `Options.camera` + `--camera` parse in main; preset implies metric-mode default focal handling (explicit `--focal` wins). Writable: `src/depth_anything3_inference.hpp`, `src/main.cpp`.
+The work is split into two thin stages. The acceptance checks are in [validation.md](validation.md).
 
-### A2 — Export + docs + tests
-`export_onnx.py`: camera ids in `--model-name` help + shape-lock warning text; README camera table; R-4 unit tests. Writable: `export_onnx.py`, `README.md`, `tests/unit/test_depth_anything3_inference.cpp`.
+## Stage A1 — Camera preset and checkpoint mapping
+
+Add `parse_camera`, `camera_to_string`, and `camera_checkpoint` to the header. Add `Options.camera` and the `--camera` parse path to `main.cpp`. The `base` preset implies the metric-mode default focal behavior; the other presets still apply focal scaling. An explicit `--focal` wins.
+
+Writable paths: `src/depth_anything3_inference.hpp` and `src/main.cpp`.
+
+## Stage A2 — Export, documentation, and tests
+
+Extend `export_onnx.py` with camera model IDs in the `--model-name` help and with the shape-lock warning text. Add the README camera table and the R-4 unit tests.
+
+Writable paths: `export_onnx.py`, `README.md`, and `tests/unit/test_depth_anything3_inference.cpp`.
+
+## Validation references
+
+Acceptance is defined in [validation.md](validation.md): V-1 covers R-1, V-2 covers R-2, V-3 covers R-3 and F-1, V-4 covers R-4, and V-5 covers R-5.
 
 ## Integration
-- After A1+A2: `cmake --build build --parallel && ctest --test-dir build -R UnitTests` + `./build/inference_app --help` shows cameras + `python3 export_onnx.py --help`.
 
-# Validation — DA3 Camera-Depth (Phase A)
+After A1 and A2:
 
-| ID | Requirement | Check |
-|----|-------------|-------|
-| V-1 | R-1 | `--help` lists 7 camera presets; `--task metric --camera d435` runs (falls back gracefully without weights: parse-level) |
-| V-2 | R-2 | README camera table matches HF collection ids; no hardcoded fx in code (`grep focal src/main.cpp` shows only `--focal`/1.2*W) |
-| V-3 | R-3 | `export_onnx.py --help` + README document trace-shape-lock + `--fixed-size` guidance |
-| V-4 | R-4 | New unit tests pass model-free |
-| V-5 | R-5 | `--model-name` help mentions camera ids |
+```bash
+cmake --build build --parallel
+ctest --test-dir build -R UnitTests
+./build/inference_app --help
+python3 export_onnx.py --help
+```
 
-## Evidence
-- 2026-10-13: build clean; `ctest -R UnitTests` pass (CameraParse/CameraCheckpoint/CameraFocalPrecedence); `py_compile` OK; `--help` shows 7 presets; `--task metric --camera base` end-to-end on da3-small: prints preset id + skip-scaling note + writes metric npy. Camera repo ids verified against HF collection page (`camera-depth-model-<slug>`); no fx/fy invented (`grep` shows only `--focal`/1.2*W). F-1 shape-lock documented in export `--help` + README.
+The `--help` output must show the camera presets, and the export help must describe the trace-shape lock and `--fixed-size` guidance.

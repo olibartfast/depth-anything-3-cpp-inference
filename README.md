@@ -4,7 +4,7 @@
 [![CMake](https://img.shields.io/badge/build%20system-CMake-blue.svg)](https://cmake.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-C++ inference engine for **[Depth Anything 3](https://github.com/ByteDance-Seed/Depth-Anything-3)** monocular depth estimation, with **multiple inference backends** (ONNX Runtime and TensorRT) and OpenCV for image I/O and visualization.
+C++ inference engine for **[Depth Anything 3](https://github.com/ByteDance-Seed/Depth-Anything-3)** monocular depth estimation. It builds with one compile-time backend — ONNX Runtime or TensorRT — and uses OpenCV for image I/O and visualization.
 
 🎬 **Demo video**: [monocular depth on street footage — TensorRT 11 on RTX 3060](https://www.youtube.com/watch?v=7wUFLR9P0p4) (side-by-side RGB vs predicted depth, 195 ms/frame; replication: `docs/video-inference.md`)
 
@@ -13,7 +13,7 @@ Other useful upstream links:
 - **Project page**: <https://depth-anything-3.github.io/> (abilities, demos, benchmark)
 - **Upstream repo**: [ByteDance-Seed/Depth-Anything-3](https://github.com/ByteDance-Seed/Depth-Anything-3)
 - **Citation**: Depth Anything 3, arXiv:2511.10647 (<https://arxiv.org/abs/2511.10647>)
-- **Hugging Face collection**: [depth-anything/depth-anything-3](https://huggingface.co/collections/depth-anything/depth-anything-3) — 11 items: `depth-anything-3-nested-giant-large-1.1`, `depth-anything-3-giant-1.1`, `depth-anything-3-large-1.1`, `depth-anything-3-base`, `depth-anything-3-small`, `depth-anything-3-metric-large`, `depth-anything-3-mono-large`, `depth-anything-3-nested-giant-large`, `depth-anything-3-giant`, `depth-anything-3-large`, plus the online demo space and the `DA3-BENCH` benchmark
+- **Hugging Face collection**: [depth-anything/depth-anything-3](https://huggingface.co/collections/depth-anything/depth-anything-3) — 12 items: 10 model checkpoints (`depth-anything-3-nested-giant-large-1.1`, `depth-anything-3-giant-1.1`, `depth-anything-3-large-1.1`, `depth-anything-3-base`, `depth-anything-3-small`, `depth-anything-3-metric-large`, `depth-anything-3-mono-large`, `depth-anything-3-nested-giant-large`, `depth-anything-3-giant`, `depth-anything-3-large`) plus the [online demo space](https://huggingface.co/spaces/depth-anything/depth-anything-3) and the [DA3-BENCH dataset](https://huggingface.co/datasets/depth-anything/DA3-BENCH)
 - **Camera depth models**: [depth-anything/camera-depth-models](https://huggingface.co/collections/depth-anything/camera-depth-models) — 7 items: `d405`, `d435`, `l515`, `kinect`, `zed2i-neural`, `zed2i-quality`, `base`
 
 
@@ -23,13 +23,13 @@ Other useful upstream links:
 - [Features](#features)
 - [Dependencies](#dependencies)
 - [Model Setup](#model-setup)
-- [Parity With the Python Reference](#parity-with-the-python-reference)
-- [Scope: Multi-View Mode (Deferred)](#scope-multi-view-mode-deferred)
 - [Installation](#installation)
 - [Building](#building)
 - [Usage](#usage)
 - [Configuration](#configuration)
 - [Technical Details](#technical-details)
+- [Parity With the Python Reference](#parity-with-the-python-reference)
+- [Any-View Support](#any-view-support)
 - [Testing](#testing)
 - [Docker](#docker)
 - [Continuous Integration](#continuous-integration)
@@ -40,14 +40,14 @@ Other useful upstream links:
 ## Features
 
 - **Monocular depth estimation** from a single RGB image
-- **Multiple inference backends** selectable at compile time:
+- **Backend choice at compile time** (one per binary):
   - ONNX Runtime (CPU/GPU, cross-platform, auto-downloaded)
   - TensorRT (NVIDIA GPU, auto-downloaded)
 - **ImageNet normalization** matching the Python reference implementation
 - **Aspect-ratio-preserving resize** with DINOv2 patch-size divisibility (multiples of 14)
 - **Depth colormap visualization** using OpenCV's INFERNO colormap
 - **Optional confidence map** output
-- **Unit tests** using Google Test (no model required)
+- **Unit tests** using Google Test (no downloaded model required)
 - **Google Benchmark** support for preprocessing benchmarks
 
 ---
@@ -57,7 +57,7 @@ Other useful upstream links:
 ### Required (All Backends)
 - **C++20 Compiler**: Clang 15+ or GCC 12+
 - **CMake**: Version 3.12 or higher
-- **OpenCV**: Version 4.x (`core`, `imgproc`, `imgcodecs`, `highgui`)
+- **OpenCV**: Version 4.x (`core`, `imgproc`, `imgcodecs`, `highgui`, `videoio`)
 - **Google Test**: Version 1.12.1 (automatically fetched during build)
 - **Ninja**: Optional but recommended (`sudo apt-get install ninja-build`)
 
@@ -69,8 +69,8 @@ Other useful upstream links:
 - **Acceleration**: CPU and GPU
 
 #### TensorRT Backend (Optional)
-- **TensorRT**: Version 11.2.1.2 (same pin as rf-detr-cpp-inference) + CUDA 13.3 toolkit (automatically downloaded during CMake configure; strongly typed — engine precision follows the ONNX graph)
-- **CUDA Toolkit**: Must be installed manually
+- **TensorRT**: Version 11.2.1.2 (same pin as rf-detr-cpp-inference; downloaded during CMake configure; strongly typed — engine precision follows the ONNX graph)
+- **CUDA Toolkit**: Version 13.3 must be installed; CMake locates it with `find_package(CUDAToolkit)`
 - **Platform**: Linux with NVIDIA GPU
 
 ---
@@ -101,10 +101,9 @@ Other useful upstream links:
        --model-dir /path/to/local/model \
        --output model.onnx
    ```
-   The script exports the model with **dynamic spatial axes** by default so it
-   accepts images of any resolution (as long as H and W are divisible by 14).
+   The script declares dynamic spatial axes by default, but the current traced exports bake the RoPE tables for the resolution used during export. Treat the exported graph as shape-locked: run it at the trace resolution, or export with `--fixed-size` and use that exact size. See [Native Task Selection](#native-task-selection---task) for the runtime guidance.
 
-3. **Supported model variants** for monocular depth:
+3. **Supported model variants** (monocular, plus the any-view Nested checkpoint):
 
    | Model | Params | License | Notes |
    |-------|--------|---------|-------|
@@ -145,7 +144,7 @@ sudo apt-get install -y cmake libopencv-dev
 
 # Compiler — any C++20-capable version:
 sudo apt-get install -y clang-18
-# or: gcc (default on Ubuntu 22.04+ is GCC 11+)
+# or: gcc (GCC 12+ is required; Ubuntu 24.04 ships GCC 13)
 
 # Optional (faster builds):
 sudo apt-get install -y ninja-build
@@ -232,11 +231,11 @@ The output depth colormap is saved as **`output_depth.jpg`** in the current dire
 ./build/inference_app model.onnx image.jpg --task metric --focal 500
 # Video input (frames extracted via OpenCV, then the directory path runs)
 ./build/inference_app model.onnx --input-video clip.mp4 --fps 5 --task multiview
-# Camera-depth preset (HF depth-anything/camera-depth-models; exact fx/fy via --focal)
+# Camera-depth preset (Hugging Face depth-anything/camera-depth-models; exact fx/fy via --focal)
 ./build/inference_app model.onnx image.jpg --task metric --camera d435 --focal 600
 # Multi-view: pass a directory (sorted *.jpg/*.jpeg/*.png → output_depth_%03d.jpg)
 ./build/inference_app model.onnx ./views/ --task multiview
-# Pose: poses.txt (N×12 w2c) + intrinsics.txt (N×4 fx fy cx cy)
+# Pose: poses.txt (N×12 world-to-camera) + intrinsics.txt (N×4 fx fy cx cy)
 ./build/inference_app model.onnx ./views/ --task pose [--use-ray-pose]
 # Dense reconstruction → output_cloud.ply (ASCII, x y z r g b)
 ./build/inference_app model.onnx ./views/ --task reconstruction
@@ -253,14 +252,12 @@ The output depth colormap is saved as **`output_depth.jpg`** in the current dire
 | `reconstruction` | `output_cloud.ply` | DA3-GIANT; NESTED-GIANT-LARGE for metric |
 | `gaussian` | `output_gaussians.ply` (placeholder) | DA3-LARGE / GIANT + Gaussian head |
 
-Notes: per-frame multi-view is a baseline — spatially consistent fusion needs an
-any-view ONNX (`python export_onnx.py --task multiview|pose|… --use-ray-pose`).
-Dynamic-axes exports are trace-shape-locked (finding F-1, proven 2026-10-13:
-a 504-trace fails on 252×504 input in RoPE broadcast) — match `--process-res`
-to the trace shape or export with `--fixed-size` (required for TensorRT).
-Tasks whose head the loaded ONNX lacks degrade gracefully (identity poses,
-depth-lifted cloud/gaussians) with a warning, never a silent wrong result.
-License: Small/Base/Mono/Metric Apache-2.0; Large/Giant/Nested CC BY-NC 4.0 (prefer `-1.1`).
+Notes:
+
+- Per-frame multi-view is a baseline. Spatially consistent fusion needs an any-view ONNX graph (`python export_onnx.py --task multiview|pose|… --use-ray-pose`).
+- Dynamic-axes exports are trace-shape-locked (finding F-1, proven 2026-10-13: a 504-trace model fails on a 252×504 input in the rotary position embedding (RoPE) broadcast). Match `--process-res` to the trace shape, or export with `--fixed-size` (required for TensorRT).
+- Tasks whose head the loaded ONNX graph lacks degrade gracefully with a warning: identity poses, a depth-lifted cloud, or placeholder Gaussians. They never produce a silent wrong result.
+- Licenses: Small, Base, Mono, and Metric are Apache-2.0. Large, Giant, and Nested are CC BY-NC 4.0; prefer the `-1.1` checkpoints.
 
 ### With Confidence Map
 
@@ -285,23 +282,40 @@ Saves `output_depth.jpg` and `output_conf.jpg`.
 ### Full Usage
 
 ```
-Usage: ./build/inference_app <path_to_model> <path_to_image> [--conf] [--no-upscale] [--process-res N] [--task TASK] [--focal PX] [--input-dir DIR] [--output-dir DIR] [--already-metric] [--use-ray-pose]
+Usage: ./build/inference_app <path_to_model> <path_to_image|dir> [options]
 
 Arguments:
   path_to_model   ONNX model (.onnx) or TensorRT engine (.engine / .trt)
   path_to_image   Input image (JPG, PNG, ...) or directory of images
 
 Options:
-  --conf          Also save the confidence map as output_conf.jpg
-  --no-upscale    Keep depth map at model output resolution (no resize to original)
-  --process-res N Resize the longest side to N before inference (default: 504)
-  --task TASK     Native DA3 task: mono (default), metric, multiview, pose, reconstruction, gaussian
-  --focal PX      Focal length in pixels for --task metric (default: 500)
-  --input-dir DIR Directory of input images (overrides positional image)
-  --output-dir DIR Directory for output files (default: current directory)
-  --already-metric Depth already in meters (Nested); skip focal*net/300 scaling
-  --use-ray-pose  Ray-based pose estimation for --task pose (needs pose-capable export)
+  --task TASK       Native DA3 task: mono, metric, multiview, pose,
+                    reconstruction, gaussian (default: mono)
+  --camera ID       Camera-depth preset: d405, d435, l515, kinect,
+                    zed2i-neural, zed2i-quality, base (default: none)
+  --focal PX        Focal length in pixels for metric scaling (default: 500;
+                    pose and reconstruction default to 1.2*W)
+  --input-dir DIR   Directory of input images (overrides positional image)
+  --output-dir DIR  Directory for output files (default: current directory)
+  --already-metric  Depth is already in meters; skip focal*net/300 scaling
+  --use-ray-pose    Use ray-based pose estimation for the pose task
+  --conf            Also save the confidence map as output_conf.jpg
+  --no-upscale      Keep depth at model output resolution (no resize)
+  --process-res N   Resize the longest side to N before inference (default: 504)
+  --dump-raw PATH   Write the raw float32 depth map to PATH as a .npy file
+  --views-per-batch K
+                    Stream views in chunks of K (default: trace N for static
+                    batch models, frame-by-frame otherwise)
+  --ply-stride S    Subsample Polygon File Format (PLY) outputs every S-th
+                    pixel (default: 1)
+  --input-video PATH
+                    Extract frames via cv::VideoCapture into a temporary
+                    directory, then run the directory path (pairs with --fps)
+  --fps K           Sample K frames per second from --input-video (default: all)
+  --help            Show help and exit
 ```
+
+The `--help` output also prints the task, checkpoint, camera, and license tables.
 
 ---
 
@@ -344,7 +358,9 @@ config.stds  = {0.229f, 0.224f, 0.225f};
 | `conf` (output 1) | `[1, H, W]` | Confidence map (optional) |
 
 > **Note**: The spatial dimensions `H` and `W` must be divisible by 14.
-> With dynamic-axes export (default), the model accepts any compliant resolution.
+> Dynamic axes are declared in the ONNX graph, but a traced export is locked to
+> the shape used during tracing. Use the trace resolution, or export with
+> `--fixed-size` and run that exact size.
 
 ### Postprocessing
 
@@ -375,8 +391,9 @@ The C++/ONNX path is parity-checked against the upstream Python reference:
 - **Python forward call** (MonocularWrapper):
   `model.model(imgs.unsqueeze(1), None, None, None, False, False, "saddle_balanced")`
 - **ONNX graph**: input image `[1, 3, H, W]` → outputs depth `[1, H, W]` and
-  optional confidence `[1, H, W]`; exported with **opset 17** and **dynamic axes**
-  (any H, W divisible by 14)
+  optional confidence `[1, H, W]`; exported with **opset 17** and dynamic axes.
+  The axes are declared, but current traced exports remain shape-locked to the
+  trace resolution (see [Native Task Selection](#native-task-selection---task)).
 - **C++ preprocessing** (`Config{process_res = 504, patch_size = 14}`): the input
   image's longest side is resized to `process_res`, `H` and `W` are rounded to be
   divisible by 14, and ImageNet normalization
@@ -384,18 +401,24 @@ The C++/ONNX path is parity-checked against the upstream Python reference:
 
 ---
 
-## Scope: Multi-View Mode (Deferred)
+## Any-View Support
 
-The upstream DA3 package also supports **any-view (multi-view) reconstruction**,
-which is out of scope for this C++ inference engine and **deferred to Phase 3**:
+Upstream DA3 also supports any-view (multi-view) reconstruction. This C++ engine
+implements the front end and the standard-file outputs, while true N-view fusion
+remains deferred.
 
-- Depth/confidence maps of shape `[N, H, W]`, extrinsics `[N, 3, 4]`, and
-  intrinsics `[N, 3, 3]` for N input views
-- Camera options such as `use_ray_pose` and `ref_view_strategy`
-- Streaming inference for scenes that do not fit in `<12GB` of GPU memory
-- 3D asset exports: `glb` / `npz` / `ply` / `3DGS video`
+**Implemented in the CLI:** the `multiview`, `pose`, `reconstruction`, and
+`gaussian` tasks; directory input and `--views-per-batch` chunking; `poses.txt`
+and `intrinsics.txt`; the point-cloud and Gaussian PLY writers; and the
+`--input-video` frame extractor. True spatially consistent fusion still needs an
+any-view ONNX graph.
 
-This repository currently covers the **monocular** depth-estimation path only.
+**Deferred:** streaming windows below 12 GB; glTF and NumPy exports; 3D Gaussian
+Splatting (3DGS) video rendering; long-sequence SLAM; and Gradio parity. The
+upstream I/O remains the reference: depth and confidence `[N, H, W]`, extrinsics
+`[N, 3, 4]`, intrinsics `[N, 3, 3]`, `use_ray_pose`, and `ref_view_strategy`.
+
+The monocular path remains the default (`--task mono`). For details, see the [native tasks CLI requirements](specs/2026-10-12-da3-native-tasks/requirements.md), the [any-view fusion validation](specs/2026-10-13-da3-anyview-fusion/validation.md), and the [deferred revisit validation](specs/2026-10-13-da3-deferred-revisit/validation.md).
 
 ---
 
@@ -450,7 +473,7 @@ docker run -v $(pwd)/data:/data da3-onnx /data/model.onnx /data/image.jpg
 
 ## Continuous Integration
 
-GitHub Actions runs `.github/workflows/ci.yml` for pushes and pull requests targeting `master`, plus manual dispatch. Every job is blocking and feeds a single `Quality Gate` status; `master` requires that check (strict, force pushes and deletions blocked).
+GitHub Actions runs `.github/workflows/ci.yml` for pushes and pull requests targeting `master`, plus manual dispatch. Every job is blocking and reports into a single `Quality Gate` status. `master` requires that check with strict up-to-date branches and blocks force pushes and deletions.
 
 | Job | What it enforces |
 |-----|------------------|
@@ -460,21 +483,29 @@ GitHub Actions runs `.github/workflows/ci.yml` for pushes and pull requests targ
 | `Clang-Tidy` | `clang-analyzer-*` and `bugprone-*` findings fail; the full configured report is uploaded as an artifact |
 | `Cppcheck` | `warning`, `performance`, and `portability` findings fail |
 | `Coverage` | gcov line coverage floor on the tested library surface, plus diff coverage on changed lines |
-| `Benchmark regression` | Google Benchmark medians compared with the stored `gh-pages` baseline; over 50% slower fails |
+| `Benchmark regression` | Google Benchmark medians compared with the stored `gh-pages` baseline; 150% of the stored median fails |
 | `Docker build` | Builds the multi-stage image on Ubuntu 24.04 and smoke-tests `inference_app --help` |
 | `Quality Gate` | Aggregates the jobs above; required status check |
 
-The gate fails closed: a skipped or cancelled dependency is a failure, not a pass. Branch protection is a repository setting, not a file: `master` currently requires `Quality Gate` with up-to-date branches, and blocks force pushes and deletions. Direct pushes by admins are still possible; enable “Require a pull request before merging” in **Settings → Branches** to block those too.
+### Gate behavior
 
-The coverage gate is calibrated to the model-free test surface: it enforces 80% line coverage on `depth_anything3_inference`, `processing_utils`, and both backend implementations, plus 70% diff coverage on changed lines. The ONNX Runtime backend is exercised end-to-end with `tests/fixtures/tiny_depth.onnx` (216 bytes), so CI needs no model weights. `main.cpp` is reported but not gated until CLI tests exist.
+The gate fails closed: a skipped or cancelled dependency is a failure, not a pass. Branch protection is a repository setting, not a file. `master` currently requires `Quality Gate` with up-to-date branches, and blocks force pushes and deletions. Direct pushes by admins are still possible; enable “Require a pull request before merging” in **Settings → Branches** to block those too.
+
+### Coverage
+
+The coverage gate is calibrated to the model-free test surface. It enforces 80% line coverage on `depth_anything3_inference`, `processing_utils`, and both backend implementations, plus 70% diff coverage on changed lines. The ONNX Runtime backend is exercised end-to-end with `tests/fixtures/tiny_depth.onnx` (216 bytes), so CI needs no model weights. `main.cpp` is reported but not gated until CLI tests exist.
+
+### Benchmarks
 
 Benchmark data is stored in the `gh-pages` branch by `github-action-benchmark`. Pushes to `master` update the baseline; pull requests compare against it and fail at 150% of the stored median. The threshold is deliberately loose because hosted runners are noisy; tighten it after collecting stable history. The dashboard is at <https://olibartfast.ninja/depth-anything-3-cpp-inference/benchmarks/> (the site root redirects there).
+
+### Formatting and static analysis
 
 The whole C++ tree is formatted and checked on every run. Format files with `clang-format-18 -i`; run `scripts/ci/check-format.sh --all` to check without modifying them.
 
 For a strict static-analysis audit, run the workflow manually with `strict_tidy=true` (Actions → CI → Run workflow).
 
-### Local Quality Run
+### Local quality run
 
 The same blocking checks run locally, using a separate `build-ci` directory:
 
@@ -500,7 +531,7 @@ cmake --build build --target benchmarks --parallel
 python3 scripts/ci/benchmark-to-json.py build/benchmark.json build/benchmark-action.json
 ```
 
-### Individual Tools
+### Individual tools
 
 | Tool | Purpose | How to run |
 |------|---------|------------|

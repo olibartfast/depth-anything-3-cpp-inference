@@ -1,34 +1,51 @@
 # Roadmap
 
-Status values: `idea` · `planned` · `in progress` · `done` · `blocked` · `deferred`
+Status values: `idea`, `planned`, `in progress`, `done`, `blocked`, `deferred`.
 
-## Phase 1 — Upstream alignment + monocular parity docs
-- Status: in progress
-- Outcome: constitution + one feature packet proving docs link official site, GitHub, both HF collections, and monocular parity path
-- Proves: stack can stay truthful to upstream without scope creep
-- Spec: `specs/2026-10-11-da3-upstream-alignment/` Branch: `spec/da3-upstream-alignment`
+## Phase 1 — Upstream alignment and monocular parity
 
-## Phase 2 — Camera-depth + metric handling
-- Status: done (2026-10-13, `spec/da3-camera-depth`)
-- Outcome: metric formula + camera-specific models (D405/D435/L515/Kinect/ZED2I-neural/ZED2I-quality/base) documented, unit-tested scaling helper, README table updated
-- Proves: metric users get correct real-world scale
-- Spec: `specs/2026-10-13-da3-camera-depth/` Branch: `spec/da3-camera-depth` (supercedes R-5 stub in `2026-10-11-da3-upstream-alignment/`)
+- **Status:** In progress.
+- **Outcome:** A project constitution and one feature packet that prove the documentation links the official site, GitHub repository, both Hugging Face collections, and the monocular parity path.
+- **Why it matters:** It shows the stack can stay faithful to upstream without expanding scope.
+- **Spec:** [Upstream alignment](2026-10-11-da3-upstream-alignment/requirements.md) · branch `spec/da3-upstream-alignment`.
 
-## Phase 3 — Any-view design spike (deferred)
-- Status: in progress (thin front-end slice: `--task` CLI landed 2026-10-12 — mono/metric fully wired, multiview per-frame baseline loop, pose/reconstruction/gaussian standard-file outputs with graceful degradation; true N-view consistent fusion, streaming, glb/npz/3DGS-video still deferred)
-- Outcome: design note for N-view tensors, extrinsics/intrinsics, `use_ray_pose`, `ref_view_strategy`, streaming, glb/ply export; no implementation
-- Proves: whether C++ any-view is a thin next slice or new project
-- Spec: future dated packet
+## Phase 2 — Camera-depth models and metric handling
 
-## Phase 1-GPU — GPU gate (Brev full + Colab partial)
-- Status: in progress (notebook authored 2026-10-13 in `spec/da3-colab-gate`, execution PENDING-USER-RUN)
-- Outcome: TRT 11.2.1.2 (build + onnx→engine + engine reuse) and ORT proven on RTX 3060 sm_86 and Brev L4 sm_89 with runbook + evidence (`evidence/2026-10-12-local-3060-trt11/`, `evidence/2026-10-12-brev-l4/`); Colab partial still pending (user-run notebook)
-- Proves: rented-GPU pattern from tritonic/rf-detr transfers to DA3
-- Spec: `specs/2026-10-11-da3-gpu-gate/` Branch: `spec/da3-gpu-gate`
+- **Status:** Done (2026-10-13).
+- **Outcome:** The metric formula and the camera-specific models (D405, D435, L515, Kinect, ZED 2i neural, ZED 2i quality, and base) are documented. A unit-tested scaling helper exists and the README model table is current.
+- **Why it matters:** Metric users get correct real-world scale.
+- **Spec:** [Camera-depth and export shape-lock](2026-10-13-da3-camera-depth/requirements.md) · branch `spec/da3-camera-depth`. This supersedes the R-5 stub in the upstream-alignment packet.
 
-## Deferred / Revisit
-- Status: in progress as `specs/2026-10-13-da3-anyview-fusion/` (Branch: `spec/da3-anyview-fusion` — Small-weights fusion attempt + streaming chunks + F-2 PLY size), `specs/2026-10-13-da3-colab-gate/` (notebook authoring), `specs/2026-10-13-da3-deferred-revisit/` (video input, 3DGS-head verdict, SLAM/Gradio/BENCH keep-or-drop). Nothing silently deferred: every item ends green or BLOCKED-with-reason.
-- [3DGS head, SLAM-Long, video reconstruction, Gradio/CLI parity — needs Phase 3 design + licensing review for Giant/Nested CC BY-NC 4.0]
-- [Benchmark pipeline DA3-BENCH — research tooling, not C++ runtime]
+## Phase 3 — Any-view design spike
+
+- **Status:** In progress.
+- **Delivered so far:** A thin front-end slice landed on 2026-10-12. The `--task` CLI supports mono and metric end to end, a per-frame multi-view baseline loop, and pose, reconstruction, and Gaussian standard-file outputs with graceful degradation.
+- **Still deferred:** True N-view consistent fusion, streaming, and glTF binary (`.glb`), NumPy (`.npz`), and 3DGS-video exports.
+- **Outcome:** A design note covering N-view tensors, extrinsics and intrinsics, `use_ray_pose`, `ref_view_strategy`, streaming, and glTF/PLY export. The design spike itself produces no implementation; the front-end slice above is separate follow-on work.
+- **Why it matters:** It determines whether C++ any-view support is a thin next slice or a separate project.
+- **Spec:** A future dated packet.
+
+## Phase 1-GPU — GPU gate (Brev full gate, Colab partial)
+
+- **Status:** In progress.
+- **Delivered so far:** TensorRT 11.2.1.2 (build, ONNX-to-engine conversion, and engine reuse) and ORT were proven on an RTX 3060 (sm_86) and a Brev L4 (sm_89). The runbook and evidence are in [the GPU gate packet](2026-10-11-da3-gpu-gate/requirements.md), under `evidence/2026-10-12-local-3060-trt11/` and `evidence/2026-10-12-brev-l4/`.
+- **Pending:** The Colab partial gate. The notebook was authored on 2026-10-13 and is pending a user run.
+- **Why it matters:** It shows the rented-GPU pattern from the tritonic and rf-detr projects transfers to DA3.
+- **Spec:** [GPU gate](2026-10-11-da3-gpu-gate/requirements.md) · branch `spec/da3-gpu-gate`.
+
+## Deferred and revisit work
+
+These efforts keep unresolved items visible rather than silently dropping them. Every item ends either green or `BLOCKED` with a dated reason.
+
+| Effort | Status | Scope |
+|---|---|---|
+| Any-view fusion | In progress | Small-model fusion attempt, streaming chunks, and the PLY size follow-up (F-2). See [requirements](2026-10-13-da3-anyview-fusion/requirements.md) · branch `spec/da3-anyview-fusion`. |
+| Colab gate | In progress | Notebook authoring; execution is pending a user run. See [requirements](2026-10-13-da3-colab-gate/requirements.md). |
+| Deferred revisit | In progress | Video input, the 3DGS-head verdict, and keep-or-drop decisions for SLAM, Gradio, and DA3-BENCH. See [requirements](2026-10-13-da3-deferred-revisit/requirements.md). |
+
+The following remain out of scope until the Phase 3 design and a licensing review for the CC BY-NC 4.0 Giant and Nested checkpoints:
+
+- 3DGS head, long-sequence SLAM, video reconstruction, and Gradio/CLI parity.
+- The DA3-BENCH benchmark pipeline, which is research tooling rather than part of the C++ runtime.
 
 _Revision: 2026-10-11 — initial thin slicing; replan after Phase 1 validation._

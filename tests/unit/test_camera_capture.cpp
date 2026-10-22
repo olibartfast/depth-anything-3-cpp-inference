@@ -141,19 +141,19 @@ TEST(CameraCapture, ColorOnlyLeavesDepthDirectoryEmpty) {
 TEST(CameraCapture, RejectsNonPositiveFrameCount) {
     TempDir dir;
     FakeSource source(1, true);
-    EXPECT_THROW(da3::camera::capture_to_directory(source, {0, 640, 480, 30}, dir.path()), std::invalid_argument);
+    EXPECT_THROW((void)da3::camera::capture_to_directory(source, {0, 640, 480, 30}, dir.path()), std::invalid_argument);
 }
 
 TEST(CameraCapture, RejectsNonPositiveFps) {
     TempDir dir;
     FakeSource source(1, true);
-    EXPECT_THROW(da3::camera::capture_to_directory(source, {1, 640, 480, 0}, dir.path()), std::invalid_argument);
+    EXPECT_THROW((void)da3::camera::capture_to_directory(source, {1, 640, 480, 0}, dir.path()), std::invalid_argument);
 }
 
 TEST(CameraCapture, ThrowsWhenStreamEndsEarly) {
     TempDir dir;
     FakeSource source(1, true);
-    EXPECT_THROW(da3::camera::capture_to_directory(source, {2, 640, 480, 30}, dir.path()), std::runtime_error);
+    EXPECT_THROW((void)da3::camera::capture_to_directory(source, {2, 640, 480, 30}, dir.path()), std::runtime_error);
 }
 
 TEST(CameraCapture, RejectsMismatchedDepth) {
@@ -169,7 +169,7 @@ TEST(CameraCapture, RejectsMismatchedDepth) {
     } source;
 
     TempDir dir;
-    EXPECT_THROW(da3::camera::capture_to_directory(source, {1, 640, 480, 30}, dir.path()), std::runtime_error);
+    EXPECT_THROW((void)da3::camera::capture_to_directory(source, {1, 640, 480, 30}, dir.path()), std::runtime_error);
 }
 
 TEST(CameraCapture, ConvertsGrayscaleAndBgraColor) {

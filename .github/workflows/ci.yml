@@ -284,7 +284,8 @@ jobs:
           output-file-path: build/benchmark-action.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-          gh-pages-branch: gh-pages
+          # Baselines live on a data-only branch. GitHub Pages is not used.
+          gh-pages-branch: benchmark-data
           benchmark-data-dir-path: benchmarks
           alert-threshold: '150%'
           fail-on-alert: true

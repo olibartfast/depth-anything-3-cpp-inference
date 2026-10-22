@@ -1,17 +1,24 @@
+#include "camera_capture.hpp"
 #include "depth_anything3_inference.hpp"
+#include "fusion_run.hpp"
 #include "processing_utils.hpp"
+
+#ifdef USE_REALSENSE
+#include "realsense_source.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <opencv2/videoio.hpp>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -41,8 +48,8 @@ static bool write_npy_float32(const cv::Mat &mat, const std::filesystem::path &p
         return false;
     }
 
-    const char magic[6] = {'\x93', 'N', 'U', 'M', 'P', 'Y'};
-    out.write(magic, sizeof(magic));
+    const std::array<char, 6> magic = {'\x93', 'N', 'U', 'M', 'P', 'Y'};
+    out.write(magic.data(), static_cast<std::streamsize>(magic.size()));
     out.put('\x01'); // major version
     out.put('\x00'); // minor version
     const auto header_len = static_cast<uint16_t>(header.size());
@@ -63,9 +70,9 @@ static bool write_npy_float32(const cv::Mat &mat, const std::filesystem::path &p
 // ---------------------------------------------------------------------------
 
 static std::string zero_padded(int index) {
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%03d", index);
-    return std::string(buf);
+    std::ostringstream out;
+    out << std::setw(3) << std::setfill('0') << index;
+    return out.str();
 }
 
 // Insert a zero-padded frame index before the extension: name.ext -> name_000.ext.
@@ -141,6 +148,17 @@ struct Options {
     int ply_stride{1};                 // pixel subsampling for PLY outputs (F-2)
     std::filesystem::path input_video; // --input-video (ffmpeg-free: cv::VideoCapture)
     double fps{0.0};                   // --fps sampling rate (0 = every frame)
+    // --input-realsense N. 0 disables capture; the frames are captured before
+    // inference and the existing directory path runs unchanged.
+    int realsense_frames{0};
+    int rs_width{1280};
+    int rs_height{720};
+    int rs_fps{30};
+    std::filesystem::path capture_dir; // empty -> <output-dir>/realsense_<timestamp>
+    // --fusion-mode a|b|c enables the offline TSDF stage; unset keeps the
+    // existing non-fused output path byte-for-byte unchanged.
+    std::optional<da3::fusion::FusionMode> fusion_mode;
+    std::filesystem::path fusion_out; // empty -> <output-dir>
 
     /// True when metric scaling must be skipped: either the user passed
     /// --already-metric, or the camera preset implies meters on its own
@@ -151,7 +169,7 @@ struct Options {
 };
 
 static void print_usage(std::ostream &os, const char *program) {
-    os << "Usage: " << program << " <path_to_model> <path_to_image|dir> [options]\n";
+    os << "Usage: " << program << " <path_to_model> [<path_to_image|dir>] [options]\n";
     os << "\n";
     os << "Arguments:\n";
     os << "  path_to_model   ONNX model (.onnx) or TensorRT engine (.engine / .trt)\n";
@@ -176,13 +194,34 @@ static void print_usage(std::ostream &os, const char *program) {
     os << "  --no-upscale      Keep depth map at model output resolution (no resize)\n";
     os << "  --process-res N   Resize the longest side to N before inference (default: 504)\n";
     os << "  --dump-raw PATH   Write the raw float32 depth map to PATH as a .npy file\n";
+    os << "                    (multi-view: PATH is a directory or filename prefix)\n";
     os << "  --views-per-batch K Stream views in chunks of K (default: trace N for\n";
     os << "                    static batch models, frame-by-frame otherwise)\n";
     os << "  --ply-stride S    Subsample PLY outputs every S-th pixel (default: 1)\n";
     os << "  --input-video PATH Extract frames via cv::VideoCapture into a temp\n";
     os << "                    dir, then run the directory path (pairs with --fps)\n";
     os << "  --fps K           Sample K frames/sec from --input-video (default: all)\n";
-    os << "                    (multi-view: PATH is a directory or filename prefix)\n";
+    os << "  --input-realsense N\n";
+    os << "                    Capture N frames from an Intel RealSense camera,\n";
+    os << "                    then run the directory path. Requires a build with\n";
+    os << "                    -DUSE_REALSENSE=ON. Reads exact color intrinsics\n";
+    os << "                    and aligned depth; auto-fills --focal when absent.\n";
+    os << "  --rs-size WxH     RealSense color size (default: 1280x720)\n";
+    os << "  --rs-fps K        RealSense frame rate (default: 30)\n";
+    os << "  --capture-dir DIR Keep captured color/ and depth/ in DIR\n";
+    os << "                    (default: <output-dir>/realsense_<timestamp>)\n";
+    os << "  --fusion-mode M   Offline fusion (lowercase):\n";
+    os << "                    a = external depth + external poses.txt (D435+ICP\n";
+    os << "                        baseline, no scale alignment); runs without\n";
+    os << "                        Open3D and then writes a fallback PLY,\n";
+    os << "                    b = DA3 depth + external poses.txt with median\n";
+    os << "                        scale alignment (requires -DWITH_FUSION=ON),\n";
+    os << "                    c = DA3 depth + model-tracked poses (requires\n";
+    os << "                        -DWITH_FUSION=ON).\n";
+    os << "                    Writes <fusion-out>/fused_mesh.ply; poses.txt,\n";
+    os << "                    intrinsics.txt and output_cloud.ply stay with\n";
+    os << "                    their ordinary task outputs.\n";
+    os << "  --fusion-out DIR  Directory for fused_mesh.ply (default: <output-dir>)\n";
     os << "  --help            Show this help and exit\n";
     os << "\n";
     os << "Tasks, outputs and recommended checkpoints:\n";
@@ -278,7 +317,7 @@ static void fill_frame_data(const DepthAnything3Inference &inference, DepthResul
     frame_out->intrinsics = {focal, focal, static_cast<float>(w) / 2.0f, static_cast<float>(h) / 2.0f};
     frame_out->pose_from_model = inference.get_pose_view(view, frame_out->pose, frame_out->intrinsics);
 
-    if (opts.task == TaskType::reconstruction || opts.task == TaskType::gaussian) {
+    if (opts.task == TaskType::reconstruction || opts.task == TaskType::gaussian || opts.fusion_mode.has_value()) {
         frame_out->image_bgr = cv::imread(image_path.string(), cv::IMREAD_COLOR);
     }
 }
@@ -380,6 +419,193 @@ static void process_frame(DepthAnything3Inference &inference, const std::filesys
     fill_frame_data(inference, result, image_path, opts, 0, frame_out);
 }
 
+// Locate an external capture depth directory. The RealSense capture layout
+// keeps colour and depth as siblings (color/, depth/), so both `input/depth`
+// and `input/../depth` are checked.
+static std::filesystem::path find_external_depth_dir(const std::filesystem::path &input) {
+    if (input.empty()) {
+        return {};
+    }
+    const std::filesystem::path base = std::filesystem::is_directory(input) ? input : input.parent_path();
+    if (base.empty()) {
+        return {};
+    }
+    const std::array<std::filesystem::path, 2> candidates = {base / "depth", base.parent_path() / "depth"};
+    for (const auto &candidate : candidates) {
+        if (!candidate.empty() && std::filesystem::is_directory(candidate)) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
+// Load capture depth as metric CV_32F. 16-bit PNGs are millimetres and are
+// converted by to_metric_depth(); other depths are left empty so the runner can
+// fall back per frame.
+static std::vector<cv::Mat> load_external_depth(const std::filesystem::path &depth_dir, std::size_t frame_count) {
+    std::vector<cv::Mat> depths(frame_count);
+    const std::vector<std::filesystem::path> paths = collect_image_paths(depth_dir);
+    const std::size_t count = std::min(frame_count, paths.size());
+    for (std::size_t i = 0; i < count; ++i) {
+        const cv::Mat raw = cv::imread(paths[i].string(), cv::IMREAD_UNCHANGED);
+        cv::Mat metric;
+        if (da3::fusion::to_metric_depth(raw, metric)) {
+            depths[i] = metric;
+        }
+    }
+    return depths;
+}
+
+// External poses.txt: the input directory first (a prior pose run), then the
+// output directory (the pose pass written earlier in this same run).
+static std::filesystem::path find_external_poses(const std::filesystem::path &input,
+                                                 const std::filesystem::path &output_dir) {
+    std::vector<std::filesystem::path> candidates;
+    if (!input.empty()) {
+        const std::filesystem::path base = std::filesystem::is_directory(input) ? input : input.parent_path();
+        if (!base.empty()) {
+            candidates.push_back(base / "poses.txt");
+        }
+    }
+    if (!output_dir.empty()) {
+        candidates.push_back(output_dir / "poses.txt");
+    }
+    for (const auto &candidate : candidates) {
+        if (std::filesystem::is_regular_file(candidate)) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
+// Whether this binary contains the Open3D TSDF backend. CMake defines
+// WITH_FUSION only when an Open3D target was found, so a WITH_FUSION-free
+// build must reject the modes that depend on it instead of silently using the
+// fallback point-cloud path.
+[[nodiscard]] static constexpr bool fusion_open3d_available() noexcept {
+#ifdef WITH_FUSION
+    return true;
+#else
+    return false;
+#endif
+}
+
+// Fail fast, before any inference, when an Open3D-backed mode is requested
+// from an Open3D-free build. Mode a stays available through the
+// dependency-free fallback integrator.
+static void require_fusion_backend(da3::fusion::FusionMode mode) {
+    if (mode == da3::fusion::FusionMode::a || fusion_open3d_available()) {
+        return;
+    }
+    throw std::runtime_error("Fusion mode '" + da3::fusion::fusion_mode_name(mode) +
+                             "' requires a build with -DWITH_FUSION=ON and a usable Open3D install; "
+                             "reconfigure with -DWITH_FUSION=ON, or use --fusion-mode a.");
+}
+
+// Resolve the trajectory for a fusion run. Modes a and b read an external
+// poses.txt; mode c uses the model pose in FrameData::pose and warns when the
+// ONNX export has no pose head (the existing identity fallback is kept).
+static std::vector<std::array<float, 12>> resolve_fusion_poses(const Options &opts,
+                                                               const std::vector<FrameData> &frames,
+                                                               const std::filesystem::path &input,
+                                                               da3::fusion::FusionMode mode) {
+    if (!da3::fusion::uses_external_poses(mode)) {
+        const bool any_pose_head =
+            std::any_of(frames.begin(), frames.end(), [](const FrameData &frame) { return frame.pose_from_model; });
+        if (!any_pose_head) {
+            std::cerr << "Warning: fusion mode 'c' requested but the model exposes no pose head; using identity poses."
+                      << std::endl;
+        }
+        return {};
+    }
+
+    const std::filesystem::path poses_path = find_external_poses(input, opts.output_dir);
+    if (poses_path.empty()) {
+        throw std::runtime_error("Fusion mode '" + da3::fusion::fusion_mode_name(mode) +
+                                 "' requires poses.txt in the input or output directory");
+    }
+    std::vector<std::array<float, 12>> external_poses = da3::fusion::load_external_poses(poses_path);
+    if (external_poses.size() != frames.size()) {
+        throw std::runtime_error("Fusion mode '" + da3::fusion::fusion_mode_name(mode) + "' needs " +
+                                 std::to_string(frames.size()) + " pose row(s) but " + poses_path.string() + " holds " +
+                                 std::to_string(external_poses.size()));
+    }
+    std::cout << "Fusion: external poses from " << poses_path.string() << std::endl;
+    return external_poses;
+}
+
+// Load the external capture depth used by mode a as the depth source and by
+// mode b as the metric reference for median scale alignment. Missing or
+// unreadable frames stay empty so the runner can fall back per frame (mode a)
+// or skip alignment (mode b).
+static std::vector<cv::Mat> resolve_fusion_reference_depth(da3::fusion::FusionMode mode,
+                                                           const std::filesystem::path &input,
+                                                           std::size_t frame_count) {
+    if (mode != da3::fusion::FusionMode::a && mode != da3::fusion::FusionMode::b) {
+        return {};
+    }
+
+    const std::filesystem::path depth_dir = find_external_depth_dir(input);
+    if (!depth_dir.empty()) {
+        std::vector<cv::Mat> reference_depth = load_external_depth(depth_dir, frame_count);
+        const auto valid_depths = std::count_if(reference_depth.begin(), reference_depth.end(),
+                                                [](const cv::Mat &depth) { return !depth.empty(); });
+        if (valid_depths > 0) {
+            std::cout << "Fusion: external depth from " << depth_dir.string() << " (" << valid_depths << " frame(s))"
+                      << std::endl;
+            return reference_depth;
+        }
+    }
+
+    if (mode == da3::fusion::FusionMode::a) {
+        std::cerr << "Warning: fusion mode 'a' found no usable external capture depth (sibling depth/ directory); "
+                     "falling back to DA3 depth without scale alignment."
+                  << std::endl;
+    } else {
+        std::cout << "Note: fusion mode 'b' found no external depth reference; median scale alignment is skipped."
+                  << std::endl;
+    }
+    return {};
+}
+
+// Run the requested fusion experiment after the ordinary task outputs have
+// been written. The runner owns only <fusion-out>/fused_mesh.ply; poses.txt,
+// intrinsics.txt and output_cloud.ply remain owned by their task passes.
+static void run_requested_fusion(const Options &opts, const std::vector<FrameData> &frames,
+                                 const std::filesystem::path &input) {
+    if (!opts.fusion_mode.has_value()) {
+        return;
+    }
+    const da3::fusion::FusionMode mode = *opts.fusion_mode;
+    if (frames.empty()) {
+        throw std::runtime_error("--fusion-mode requires at least one accumulated frame");
+    }
+
+    const std::vector<std::array<float, 12>> external_poses = resolve_fusion_poses(opts, frames, input, mode);
+    const std::vector<cv::Mat> reference_depth = resolve_fusion_reference_depth(mode, input, frames.size());
+
+    std::filesystem::path fusion_dir = opts.fusion_out;
+    if (fusion_dir.empty()) {
+        fusion_dir = opts.output_dir;
+    }
+    if (fusion_dir.empty()) {
+        fusion_dir = ".";
+    }
+
+    const da3::fusion::FusionRunSummary summary =
+        da3::fusion::run_offline_fusion(frames, external_poses, mode, fusion_dir, reference_depth);
+    std::cout << "Fusion mode '" << da3::fusion::fusion_mode_name(mode) << "': integrated " << summary.frames_integrated
+              << "/" << summary.frames_attempted << " frame(s), mean depth scale " << summary.mean_depth_scale
+              << std::endl;
+    if (!summary.mesh_written) {
+        throw std::runtime_error("Could not write fused mesh to " + summary.mesh_path.string());
+    }
+    if (!fusion_open3d_available()) {
+        std::cout << "Note: Open3D is not enabled; fused_mesh.ply is the fallback point-cloud PLY." << std::endl;
+    }
+    std::cout << "Fused mesh saved to: " << summary.mesh_path.string() << std::endl;
+}
+
 // Emit the accumulated file-based task outputs once every frame is processed.
 static void write_task_outputs(const Options &opts, const std::vector<FrameData> &frames) {
     if (opts.task == TaskType::pose) {
@@ -433,6 +659,9 @@ static void write_task_outputs(const Options &opts, const std::vector<FrameData>
     }
 }
 
+// The CLI is a linear argument dispatcher; splitting it would obscure the
+// option grammar more than it helps.
+// NOLINTNEXTLINE(readability-function-cognitive-complexity)
 int main(int argc, const char *argv[]) {
     const std::vector<std::string> args(argv + 1, argv + argc);
 
@@ -521,6 +750,48 @@ int main(int argc, const char *argv[]) {
                 std::cerr << "Invalid value for --fps: " << e.what() << std::endl;
                 return 1;
             }
+        } else if (arg == "--input-realsense" && i + 1 < args.size()) {
+            try {
+                opts.realsense_frames = std::stoi(args[++i]);
+                if (opts.realsense_frames <= 0) {
+                    throw std::invalid_argument("frame count must be positive");
+                }
+            } catch (const std::exception &e) {
+                std::cerr << "Invalid value for --input-realsense: " << e.what() << std::endl;
+                return 1;
+            }
+        } else if (arg == "--rs-size" && i + 1 < args.size()) {
+            std::istringstream size(args[++i]);
+            char separator = '\0';
+            int width = 0;
+            int height = 0;
+            if (!(size >> width >> separator >> height) || separator != 'x' || width <= 0 || height <= 0) {
+                std::cerr << "Invalid value for --rs-size: expected WxH (for example 1280x720)" << std::endl;
+                return 1;
+            }
+            opts.rs_width = width;
+            opts.rs_height = height;
+        } else if (arg == "--rs-fps" && i + 1 < args.size()) {
+            try {
+                opts.rs_fps = std::stoi(args[++i]);
+                if (opts.rs_fps <= 0) {
+                    throw std::invalid_argument("fps must be positive");
+                }
+            } catch (const std::exception &e) {
+                std::cerr << "Invalid value for --rs-fps: " << e.what() << std::endl;
+                return 1;
+            }
+        } else if (arg == "--capture-dir" && i + 1 < args.size()) {
+            opts.capture_dir = args[++i];
+        } else if (arg == "--fusion-mode" && i + 1 < args.size()) {
+            try {
+                opts.fusion_mode = da3::fusion::parse_fusion_mode(args[++i]);
+            } catch (const std::exception &e) {
+                std::cerr << "Invalid value for --fusion-mode: " << e.what() << std::endl;
+                return 1;
+            }
+        } else if (arg == "--fusion-out" && i + 1 < args.size()) {
+            opts.fusion_out = args[++i];
         } else if (arg == "--ply-stride" && i + 1 < args.size()) {
             try {
                 opts.ply_stride = std::stoi(args[++i]);
@@ -535,6 +806,16 @@ int main(int argc, const char *argv[]) {
             std::cerr << "Warning: ignoring unknown option '" << arg << "'" << std::endl;
         } else {
             positionals.push_back(arg);
+        }
+    }
+
+    // Reject Open3D-backed fusion modes before spending time loading a model.
+    if (opts.fusion_mode.has_value()) {
+        try {
+            require_fusion_backend(*opts.fusion_mode);
+        } catch (const std::exception &e) {
+            std::cerr << "Error: " << e.what() << std::endl;
+            return 1;
         }
     }
 
@@ -555,8 +836,10 @@ int main(int argc, const char *argv[]) {
     if (!opts.input_dir.empty()) {
         input = opts.input_dir;
     }
-    if (input.empty() && opts.input_video.empty()) {
-        std::cerr << "Error: missing <path_to_image> (or pass --input-dir DIR / --input-video PATH)" << std::endl;
+    if (input.empty() && opts.input_video.empty() && opts.realsense_frames == 0) {
+        std::cerr << "Error: missing <path_to_image> (or pass --input-dir DIR / --input-video PATH / "
+                     "--input-realsense N)"
+                  << std::endl;
         print_usage(std::cerr, argv[0]);
         return 1;
     }
@@ -570,6 +853,10 @@ int main(int argc, const char *argv[]) {
 
     std::filesystem::path video_tmp;
     try {
+        if (opts.realsense_frames > 0 &&
+            (!opts.input_video.empty() || !opts.input_dir.empty() || !image_path.empty())) {
+            throw std::runtime_error("--input-realsense is exclusive with <image>, --input-dir, and --input-video");
+        }
         if (!opts.input_video.empty()) {
             if (!opts.input_dir.empty() || !image_path.empty()) {
                 throw std::runtime_error("--input-video is exclusive with <image> and --input-dir");
@@ -579,6 +866,35 @@ int main(int argc, const char *argv[]) {
             const size_t n = tasks::extract_video_frames(opts.input_video, opts.fps, video_tmp);
             std::cout << "Extracted " << n << " frame(s) to " << video_tmp.string() << std::endl;
             input = video_tmp;
+        }
+        if (opts.realsense_frames > 0) {
+#ifdef USE_REALSENSE
+            const da3::camera::CaptureConfig capture_config{opts.realsense_frames, opts.rs_width, opts.rs_height,
+                                                            opts.rs_fps};
+            std::filesystem::path capture_root = opts.capture_dir;
+            if (capture_root.empty()) {
+                const std::string stamp = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+                capture_root = opts.output_dir.empty() ? std::filesystem::path("realsense_" + stamp)
+                                                       : opts.output_dir / ("realsense_" + stamp);
+            }
+            auto source = da3::camera::make_realsense_source(capture_config);
+            std::cout << "RealSense: " << source->device_name() << " (" << capture_config.width << "x"
+                      << capture_config.height << " @ " << capture_config.fps << " fps)" << std::endl;
+            const da3::camera::CaptureResult captured =
+                da3::camera::capture_to_directory(*source, capture_config, capture_root);
+            std::cout << "Captured " << captured.frames << " color frame(s) and " << captured.depth_frames
+                      << " aligned depth frame(s) to " << capture_root.string() << std::endl;
+            std::cout << "Color intrinsics: fx=" << captured.intrinsics.fx << " fy=" << captured.intrinsics.fy
+                      << " cx=" << captured.intrinsics.cx << " cy=" << captured.intrinsics.cy << std::endl;
+            if (!opts.focal_set) {
+                opts.focal = da3::camera::focal_px(captured.intrinsics);
+                opts.focal_set = true;
+                std::cout << "Focal from device intrinsics: " << opts.focal << " px (mean of fx and fy)" << std::endl;
+            }
+            input = captured.frames == 1 ? capture_root / "color" / "000.png" : capture_root / "color";
+#else
+            throw std::runtime_error("--input-realsense requires a binary built with -DUSE_REALSENSE=ON");
+#endif
         }
         if (!std::filesystem::exists(input)) {
             throw std::runtime_error("Input path does not exist: " + input.string());
@@ -617,8 +933,10 @@ int main(int argc, const char *argv[]) {
         std::cout << "Timing: init " << init_ms << " ms (model load)" << std::endl;
 
         // File-based tasks accumulate every frame before writing a single artifact.
-        const bool accumulate_frames =
-            opts.task == TaskType::pose || opts.task == TaskType::reconstruction || opts.task == TaskType::gaussian;
+        // Fusion reuses the same buffer so the A/B/C runner sees the exact
+        // postprocessed depth and poses that produced the task outputs.
+        const bool accumulate_frames = opts.task == TaskType::pose || opts.task == TaskType::reconstruction ||
+                                       opts.task == TaskType::gaussian || opts.fusion_mode.has_value();
         std::vector<FrameData> frames;
 
         // Batch-model detection: static [N,3,H,W] input (dynamo any-view
@@ -724,6 +1042,7 @@ int main(int argc, const char *argv[]) {
         }
 
         write_task_outputs(opts, frames);
+        run_requested_fusion(opts, frames, input);
         if (!video_tmp.empty()) {
             std::error_code ec;
             std::filesystem::remove_all(video_tmp, ec); // best-effort temp cleanup

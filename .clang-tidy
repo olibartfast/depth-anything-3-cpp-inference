@@ -21,7 +21,10 @@ Checks: >
   -readability-identifier-length,
   -readability-convert-member-functions-to-static,
   -modernize-return-braced-init-list,
-  -modernize-use-auto
+  -modernize-use-auto,
+  -performance-avoid-endl
 
-WarningsAsErrors: ''
+# performance-avoid-endl is disabled: CLI status lines intentionally flush so
+# progress is visible when output is piped. This is not a hot path.
+WarningsAsErrors: '*'
 HeaderFilterRegex: 'src/.*'

@@ -41,6 +41,15 @@ endif()
 option(USE_ONNX_RUNTIME "Build with ONNX Runtime backend support" ON)
 option(USE_TENSORRT "Build with TensorRT backend support" OFF)
 
+# Optional Intel RealSense capture source. Default OFF so the core build, CI,
+# and Docker stay free of the SDK; camera builds turn it on explicitly.
+option(USE_REALSENSE "Build with Intel RealSense camera capture support" OFF)
+
+# Optional Open3D TSDF fusion stage (see docs/fusion.md). Default OFF so the
+# core build, CI, and Docker stay free of Open3D; the dependency-free helpers
+# in src/fusion_utils.hpp remain available either way.
+option(WITH_FUSION "Build with Open3D TSDF fusion" OFF)
+
 # Validate that at least one backend is enabled
 if(NOT USE_ONNX_RUNTIME AND NOT USE_TENSORRT)
     message(FATAL_ERROR "At least one backend must be enabled. Set USE_ONNX_RUNTIME=ON or USE_TENSORRT=ON")
@@ -249,16 +258,79 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(googletest)
 
+# --- Optional Intel RealSense capture support ---
+set(REALSENSE_LIBRARIES "")
+set(REALSENSE_INCLUDE_DIRS "")
+if(USE_REALSENSE)
+    find_package(realsense2 QUIET)
+    if(realsense2_FOUND)
+        message(STATUS "Found system librealsense2")
+        set(REALSENSE_INCLUDE_DIRS ${realsense2_INCLUDE_DIRS})
+    else()
+        message(STATUS "librealsense2 not found; building pinned v2.59.1 from source")
+        set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(BUILD_GRAPHICAL_EXAMPLES OFF CACHE BOOL "" FORCE)
+        set(BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+        set(BUILD_PYTHON_BINDINGS OFF CACHE BOOL "" FORCE)
+        set(BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+        set(BUILD_WITH_TM2 OFF CACHE BOOL "" FORCE)
+        set(BUILD_WITH_OPENMP OFF CACHE BOOL "" FORCE)
+        set(BUILD_WITH_STREAM_SETS OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(
+            librealsense
+            GIT_REPOSITORY https://github.com/IntelRealSense/librealsense.git
+            GIT_TAG v2.59.1
+            GIT_SHALLOW TRUE
+        )
+        # librealsense v2.59.1 declares an injected-class-name constructor that
+        # GCC rejects under C++20 ("single_consumer_frame_queue< T >(...)"). It
+        # builds cleanly at C++17, so compile only this subproject at 17 and
+        # restore the project standard afterwards.
+        set(DA3_CXX_STANDARD "${CMAKE_CXX_STANDARD}")
+        set(CMAKE_CXX_STANDARD 17)
+        FetchContent_MakeAvailable(librealsense)
+        set(CMAKE_CXX_STANDARD "${DA3_CXX_STANDARD}")
+    endif()
+
+    if(TARGET realsense2::realsense2)
+        set(REALSENSE_LIBRARIES realsense2::realsense2)
+    elseif(TARGET realsense2)
+        set(REALSENSE_LIBRARIES realsense2)
+    elseif(realsense2_LIBRARY)
+        set(REALSENSE_LIBRARIES ${realsense2_LIBRARY})
+    endif()
+
+    # The SDK's headers trigger the project warning set (sign-conversion,
+    # shadow, deprecated-copy) on GCC 13. Treat the target's includes as
+    # system headers so only project code is subject to -Werror.
+    if(TARGET realsense2)
+        get_target_property(REALSENSE_TARGET_INCLUDES realsense2 INTERFACE_INCLUDE_DIRECTORIES)
+        if(REALSENSE_TARGET_INCLUDES)
+            set_property(TARGET realsense2 APPEND PROPERTY INTERFACE_SYSTEM_INCLUDE_DIRECTORIES
+                         "${REALSENSE_TARGET_INCLUDES}")
+        endif()
+    endif()
+    if(NOT REALSENSE_LIBRARIES)
+        message(FATAL_ERROR "USE_REALSENSE=ON but no librealsense2 target or library was found")
+    endif()
+    message(STATUS "RealSense support: ${REALSENSE_LIBRARIES}")
+endif()
+
 # --- Source Directories ---
 set(SOURCE_DIR "${CMAKE_SOURCE_DIR}/src")
 set(TEST_DIR "${CMAKE_SOURCE_DIR}/tests")
 
 # --- Main Library ---
 set(DA3_SOURCES
+    "${SOURCE_DIR}/camera_capture.cpp"
     "${SOURCE_DIR}/depth_anything3_inference.cpp"
     "${SOURCE_DIR}/processing_utils.cpp"
     "${SOURCE_DIR}/backends/inference_backend.cpp"
 )
+
+if(USE_REALSENSE)
+    list(APPEND DA3_SOURCES "${SOURCE_DIR}/realsense_source.cpp")
+endif()
 
 if(USE_ONNX_RUNTIME)
     list(APPEND DA3_SOURCES "${SOURCE_DIR}/backends/onnx_runtime_backend.cpp")
@@ -292,6 +364,13 @@ if(USE_TENSORRT)
     target_compile_definitions(da3_inference_lib PUBLIC USE_TENSORRT)
 endif()
 
+if(USE_REALSENSE)
+    if(REALSENSE_INCLUDE_DIRS)
+        target_include_directories(da3_inference_lib SYSTEM PUBLIC ${REALSENSE_INCLUDE_DIRS})
+    endif()
+    target_compile_definitions(da3_inference_lib PUBLIC USE_REALSENSE)
+endif()
+
 target_link_libraries(da3_inference_lib
     PUBLIC
         "${OpenCV_LIBS}"
@@ -300,6 +379,10 @@ target_link_libraries(da3_inference_lib
 
 if(USE_ONNX_RUNTIME)
     target_link_libraries(da3_inference_lib PUBLIC "${ONNXRUNTIME_LIBRARY}")
+endif()
+
+if(USE_REALSENSE)
+    target_link_libraries(da3_inference_lib PUBLIC ${REALSENSE_LIBRARIES})
 endif()
 
 if(USE_TENSORRT)
@@ -316,6 +399,30 @@ if(USE_TENSORRT)
         BUILD_RPATH_USE_ORIGIN TRUE
         INSTALL_RPATH_USE_LINK_PATH TRUE
     )
+endif()
+
+# --- Optional Open3D TSDF fusion support ---
+# Fusion modes B/C (docs/fusion.md) call into Open3D's tensor `slam::Model`.
+# A missing Open3D is a warning, not an error: the OpenCV-only helpers still
+# build and the CLI falls back to the non-fused (mode A) path.
+if(WITH_FUSION)
+    find_package(Open3D QUIET)
+    if(TARGET Open3D::Open3D)
+        set(OPEN3D_FUSION_TARGET Open3D::Open3D)
+    elseif(TARGET Open3D)
+        set(OPEN3D_FUSION_TARGET Open3D)
+    endif()
+
+    if(Open3D_FOUND AND OPEN3D_FUSION_TARGET)
+        message(STATUS "Fusion support: Open3D (${OPEN3D_FUSION_TARGET})")
+        target_link_libraries(da3_inference_lib PUBLIC ${OPEN3D_FUSION_TARGET})
+        target_compile_definitions(da3_inference_lib PUBLIC WITH_FUSION)
+    else()
+        message(WARNING
+            "WITH_FUSION=ON but Open3D was not found (or exposes no CMake target); "
+            "building without TSDF fusion. Install Open3D or set Open3D_DIR, or "
+            "reconfigure with -DWITH_FUSION=OFF.")
+    endif()
 endif()
 
 # --- Main Application ---
@@ -346,6 +453,7 @@ endif()
 # --- Unit Tests ---
 set(TEST_FIXTURE_DIR "${TEST_DIR}/fixtures")
 add_executable(unit_tests
+    "${TEST_DIR}/unit/test_camera_capture.cpp"
     "${TEST_DIR}/unit/test_depth_anything3_inference.cpp"
     "${TEST_DIR}/unit/test_onnx_backend.cpp"
 )

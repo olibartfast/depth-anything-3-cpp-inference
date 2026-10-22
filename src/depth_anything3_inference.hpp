@@ -5,6 +5,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -13,6 +14,7 @@
 #include <opencv2/videoio.hpp>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -26,7 +28,7 @@ using da3::backend::InferenceBackend;
 /// These mirror the upstream `da3` CLI modes. Only `mono`/`metric` have
 /// complete single-graph support in this binary today; the remaining tasks are
 /// accepted by the CLI and degrade to depth-only output (see requirements D-4).
-enum class TaskType { mono, metric, multiview, pose, reconstruction, gaussian };
+enum class TaskType : std::uint8_t { mono, metric, multiview, pose, reconstruction, gaussian };
 
 /// Parse a `--task` argument into a TaskType.
 /// @param name  Raw task name; an empty string maps to TaskType::mono.
@@ -99,7 +101,7 @@ enum class TaskType { mono, metric, multiview, pose, reconstruction, gaussian };
 /// they output depth that needs the camera focal length (px) to reach meters
 /// (see the metric formula in README/`processing_utils`). No fx/fy values are
 /// baked in — the exact intrinsics remain a user `--focal` input (R-2).
-enum class CameraPreset { none, d405, d435, l515, kinect, zed2i_neural, zed2i_quality, base };
+enum class CameraPreset : std::uint8_t { none, d405, d435, l515, kinect, zed2i_neural, zed2i_quality, base };
 
 /// Parse a `--camera` argument into a CameraPreset.
 /// @param name  Raw camera id; an empty string maps to CameraPreset::none.
@@ -248,7 +250,8 @@ struct FrameData {
 [[nodiscard]] inline float default_focal(int width) noexcept { return 1.2f * static_cast<float>(width); }
 
 /// Back-project a depth pixel with the pinhole model and transform by the
-/// frame pose: X=(u-cx)*Z/fx, Y=(v-cy)*Z/fy then p_world = R * p + t.
+/// frame pose: poses.txt stores world-to-camera (w2c, COLMAP-compatible), so
+/// world = R^T * (p_cam - t).
 inline void backproject_point(const FrameData &frame, int u, int v, float z, float &out_x, float &out_y, float &out_z) {
     const float fx = frame.intrinsics[0] > 0.0f ? frame.intrinsics[0] : 1.0f;
     const float fy = frame.intrinsics[1] > 0.0f ? frame.intrinsics[1] : 1.0f;
@@ -256,9 +259,12 @@ inline void backproject_point(const FrameData &frame, int u, int v, float z, flo
     const float cam_y = (static_cast<float>(v) - frame.intrinsics[3]) * z / fy;
     const float cam_z = z;
 
-    out_x = frame.pose[0] * cam_x + frame.pose[1] * cam_y + frame.pose[2] * cam_z + frame.pose[3];
-    out_y = frame.pose[4] * cam_x + frame.pose[5] * cam_y + frame.pose[6] * cam_z + frame.pose[7];
-    out_z = frame.pose[8] * cam_x + frame.pose[9] * cam_y + frame.pose[10] * cam_z + frame.pose[11];
+    const float dx = cam_x - frame.pose[3];
+    const float dy = cam_y - frame.pose[7];
+    const float dz = cam_z - frame.pose[11];
+    out_x = frame.pose[0] * dx + frame.pose[4] * dy + frame.pose[8] * dz;
+    out_y = frame.pose[1] * dx + frame.pose[5] * dy + frame.pose[9] * dz;
+    out_z = frame.pose[2] * dx + frame.pose[6] * dy + frame.pose[10] * dz;
 }
 
 /// Resize the frame's colour image to the (postprocessed) depth size.
@@ -479,9 +485,9 @@ inline void backproject_point(const FrameData &frame, int u, int v, float z, flo
             continue;
         }
         next_keep = static_cast<size_t>(std::lround(static_cast<double>(i) + step));
-        char name[32];
-        std::snprintf(name, sizeof(name), "%03zu.jpg", written);
-        if (!cv::imwrite((out_dir / name).string(), frame)) {
+        std::ostringstream name;
+        name << std::setw(3) << std::setfill('0') << written << ".jpg";
+        if (!cv::imwrite((out_dir / name.str()).string(), frame)) {
             throw std::runtime_error("Could not write frame to " + out_dir.string());
         }
         ++written;

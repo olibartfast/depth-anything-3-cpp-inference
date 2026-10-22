@@ -1,7 +1,9 @@
 #include "depth_anything3_inference.hpp"
+#include "fusion_eval.hpp"
 #include "mock_backend.hpp"
 #include "processing_utils.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -697,6 +699,185 @@ TEST(VideoExtract, SamplesByFps) {
     EXPECT_EQ(tasks::extract_video_frames(avi, 0.0, dir / "all"), 5u);
     EXPECT_THROW({ (void)tasks::extract_video_frames(dir / "missing.avi", 0.0, out); }, std::runtime_error);
     std::filesystem::remove_all(dir);
+}
+
+// ============================================================================
+// Fusion preprocessing helpers (src/fusion_utils.hpp)
+// ============================================================================
+
+TEST(FusionPreprocess, ScaleIntrinsics) {
+    const da3::fusion::Pinhole k{500.0F, 400.0F, 320.0F, 240.0F};
+    const da3::fusion::Pinhole scaled = da3::fusion::scale_intrinsics(k, 640, 480, 320, 240);
+    EXPECT_FLOAT_EQ(scaled.fx, 250.0F);
+    EXPECT_FLOAT_EQ(scaled.fy, 200.0F);
+    EXPECT_FLOAT_EQ(scaled.cx, 160.0F);
+    EXPECT_FLOAT_EQ(scaled.cy, 120.0F);
+
+    // A non-positive source size is a no-op rather than a division by zero.
+    const da3::fusion::Pinhole unchanged = da3::fusion::scale_intrinsics(k, 0, 0, 320, 240);
+    EXPECT_FLOAT_EQ(unchanged.fx, k.fx);
+    EXPECT_FLOAT_EQ(unchanged.fy, k.fy);
+    EXPECT_FLOAT_EQ(unchanged.cx, k.cx);
+    EXPECT_FLOAT_EQ(unchanged.cy, k.cy);
+}
+
+TEST(FusionPreprocess, MaskLowConfidence) {
+    const cv::Mat depth(4, 4, CV_32F, cv::Scalar(2.0));
+    cv::Mat conf(4, 4, CV_32F, cv::Scalar(0.9));
+    conf.at<float>(1, 2) = 0.2F; // below threshold -> zeroed
+    conf.at<float>(3, 3) = 0.5F; // exactly at threshold -> kept
+
+    const cv::Mat masked = da3::fusion::mask_low_confidence(depth, conf, 0.5F);
+    EXPECT_FLOAT_EQ(masked.at<float>(1, 2), 0.0F);
+    EXPECT_FLOAT_EQ(masked.at<float>(3, 3), 2.0F);
+    EXPECT_FLOAT_EQ(masked.at<float>(0, 0), 2.0F);
+    // The input depth is not modified.
+    EXPECT_FLOAT_EQ(depth.at<float>(1, 2), 2.0F);
+
+    // Empty confidence means "no masking": depth is returned unchanged.
+    const cv::Mat unmasked = da3::fusion::mask_low_confidence(depth, cv::Mat(), 0.5F);
+    for (int y = 0; y < unmasked.rows; ++y) {
+        for (int x = 0; x < unmasked.cols; ++x) {
+            EXPECT_FLOAT_EQ(unmasked.at<float>(y, x), 2.0F);
+        }
+    }
+}
+
+TEST(FusionPreprocess, ComputeValidMask) {
+    cv::Mat depth(4, 4, CV_32F, cv::Scalar(2.0));
+    depth.at<float>(2, 2) = 0.0F; // invalid depth -> invalid mask
+
+    const cv::Mat valid = da3::fusion::compute_valid_mask(depth, 0.3F);
+    EXPECT_EQ(valid.type(), CV_8U);
+    EXPECT_EQ(valid.at<std::uint8_t>(2, 2), 0);
+    EXPECT_EQ(valid.at<std::uint8_t>(0, 0), 255);
+    EXPECT_EQ(valid.at<std::uint8_t>(0, 3), 255);
+    EXPECT_EQ(valid.at<std::uint8_t>(3, 0), 255);
+
+    // With edge_thresh <= 0, only non-positive depths are culled.
+    cv::Mat flat(4, 4, CV_32F, cv::Scalar(1.5));
+    flat.at<float>(0, 0) = -1.0F;
+    flat.at<float>(3, 3) = 0.0F;
+    const cv::Mat flat_valid = da3::fusion::compute_valid_mask(flat, 0.0F);
+    EXPECT_EQ(flat_valid.at<std::uint8_t>(0, 0), 0);
+    EXPECT_EQ(flat_valid.at<std::uint8_t>(3, 3), 0);
+    EXPECT_EQ(flat_valid.at<std::uint8_t>(1, 1), 255);
+}
+
+TEST(FusionPreprocess, EstimateScaleMedian) {
+    const cv::Mat pred(4, 4, CV_32F, cv::Scalar(2.0));
+    cv::Mat ref(4, 4, CV_32F, cv::Scalar(5.0));
+    EXPECT_DOUBLE_EQ(da3::fusion::estimate_scale_median(pred, ref, cv::Mat()), 2.5);
+
+    // An outlier is excluded by the valid mask.
+    ref.at<float>(0, 0) = 100.0F;
+    cv::Mat valid(4, 4, CV_8U, cv::Scalar(255));
+    valid.at<std::uint8_t>(0, 0) = 0;
+    EXPECT_DOUBLE_EQ(da3::fusion::estimate_scale_median(pred, ref, valid), 2.5);
+
+    // Nothing valid, or no positive ratios, falls back to 1.0.
+    const cv::Mat none(4, 4, CV_8U, cv::Scalar(0));
+    EXPECT_DOUBLE_EQ(da3::fusion::estimate_scale_median(pred, ref, none), 1.0);
+    const cv::Mat zeros(4, 4, CV_32F, cv::Scalar(0.0));
+    EXPECT_DOUBLE_EQ(da3::fusion::estimate_scale_median(zeros, ref, cv::Mat()), 1.0);
+}
+
+TEST(FusionPreprocess, InvertPoseW2cToC2w) {
+    // R = 90 deg about z, t = (1, 2, 3).
+    const std::array<float, 12> w2c = {0.0F, -1.0F, 0.0F, 1.0F, 1.0F, 0.0F, 0.0F, 2.0F, 0.0F, 0.0F, 1.0F, 3.0F};
+    const std::array<float, 12> c2w = da3::fusion::invert_pose_w2c_to_c2w(w2c);
+
+    // R^T = [0 1 0; -1 0 0; 0 0 1], t' = -R^T t = (-2, 1, -3).
+    EXPECT_NEAR(c2w[0], 0.0F, 1e-6F);
+    EXPECT_NEAR(c2w[1], 1.0F, 1e-6F);
+    EXPECT_NEAR(c2w[3], -2.0F, 1e-6F);
+    EXPECT_NEAR(c2w[4], -1.0F, 1e-6F);
+    EXPECT_NEAR(c2w[7], 1.0F, 1e-6F);
+    EXPECT_NEAR(c2w[11], -3.0F, 1e-6F);
+
+    // Inverting twice returns the original w2c pose.
+    const std::array<float, 12> round_trip = da3::fusion::invert_pose_w2c_to_c2w(c2w);
+    for (std::size_t i = 0; i < w2c.size(); ++i) {
+        EXPECT_NEAR(round_trip[i], w2c[i], 1e-6F) << "element " << i;
+    }
+}
+
+// ============================================================================
+// Fusion metrics (src/fusion_eval.hpp) on synthetic 4x4 mats/point grids.
+// ============================================================================
+
+TEST(FusionEval, AbsRel) {
+    const cv::Mat ref(4, 4, CV_32F, cv::Scalar(1.0));
+    const cv::Mat pred(4, 4, CV_32F, cv::Scalar(1.5));
+    // All 16 pixels are within [0.3, 3.0]: |1.5 - 1.0| / 1.0 = 0.5.
+    EXPECT_DOUBLE_EQ(da3::fusion::eval_abs_rel(pred, ref), 0.5);
+    // The wrapper pins the default metric range to 0.3 m .. 3.0 m.
+    EXPECT_DOUBLE_EQ(da3::fusion::eval_abs_rel(pred, ref), da3::fusion::abs_rel(pred, ref, cv::Mat(), 0.3, 3.0));
+
+    // Out-of-range references and non-positive predictions are skipped.
+    cv::Mat ref_sparse = ref.clone();
+    cv::Mat pred_sparse = pred.clone();
+    ref_sparse.at<float>(0, 0) = 5.0F;
+    pred_sparse.at<float>(0, 0) = 5.0F;
+    pred_sparse.at<float>(0, 1) = 0.0F;
+    EXPECT_DOUBLE_EQ(da3::fusion::eval_abs_rel(pred_sparse, ref_sparse), 0.5);
+
+    // An empty valid mask means all pixels; an all-zero mask means none (0.0).
+    const cv::Mat mask(4, 4, CV_8U, cv::Scalar(0));
+    EXPECT_DOUBLE_EQ(da3::fusion::eval_abs_rel(pred, ref, mask), 0.0);
+}
+
+TEST(FusionEval, AteTranslationRmse) {
+    const std::array<float, 12> identity = {1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F};
+    std::array<float, 12> moved = identity;
+    moved[3] = 3.0F; // translation only along x
+
+    std::vector<std::array<float, 12>> est = {identity, moved};
+    std::vector<std::array<float, 12>> ref = {identity, identity};
+    // sqrt((0^2 + 3^2) / 2) = 3 / sqrt(2).
+    EXPECT_NEAR(da3::fusion::eval_ate_translation_rmse(est, ref), 3.0 / std::sqrt(2.0), 1e-6);
+    EXPECT_DOUBLE_EQ(da3::fusion::eval_ate_translation_rmse(est, ref), da3::fusion::ate_translation_rmse(est, ref));
+
+    // Size mismatch and empty input use the -1.0 sentinel.
+    const std::vector<std::array<float, 12>> one = {identity};
+    const std::vector<std::array<float, 12>> none;
+    EXPECT_DOUBLE_EQ(da3::fusion::eval_ate_translation_rmse(one, ref), -1.0);
+    EXPECT_DOUBLE_EQ(da3::fusion::eval_ate_translation_rmse(none, none), -1.0);
+}
+
+TEST(FusionEval, ChamferL1) {
+    using Points = std::vector<std::array<float, 3>>;
+    const Points empty;
+    const Points origin = {{0.0F, 0.0F, 0.0F}};
+    const Points diagonal = {{1.0F, 1.0F, 0.0F}};
+
+    EXPECT_DOUBLE_EQ(da3::fusion::chamfer_l1(empty, origin), -1.0);
+    EXPECT_DOUBLE_EQ(da3::fusion::chamfer_l1(origin, empty), -1.0);
+
+    // Manhattan distance: |1| + |1| + |0| = 2, not the Euclidean sqrt(2).
+    EXPECT_DOUBLE_EQ(da3::fusion::chamfer_l1(origin, diagonal), 2.0);
+    EXPECT_DOUBLE_EQ(da3::fusion::chamfer_l1(diagonal, origin), 2.0);
+    EXPECT_DOUBLE_EQ(da3::fusion::chamfer_l1(origin, origin), 0.0);
+
+    // Unequal set sizes: a->b = (1 + 2 + 6) / 3 = 3, b->a = (1 + 2) / 2 = 1.5.
+    const Points a = {{0.0F, 0.0F, 0.0F}, {4.0F, 0.0F, 0.0F}, {8.0F, 0.0F, 0.0F}};
+    const Points b = {{1.0F, 0.0F, 0.0F}, {2.0F, 0.0F, 0.0F}};
+    EXPECT_DOUBLE_EQ(da3::fusion::chamfer_l1(a, b), 2.25);
+    EXPECT_DOUBLE_EQ(da3::fusion::chamfer_l1(a, b), da3::fusion::chamfer_l1(b, a));
+
+    // Synthetic 4x4 point grid vs the same plane lifted 1 m in z.
+    Points plane;
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            plane.push_back({static_cast<float>(x), static_cast<float>(y), 0.0F});
+        }
+    }
+    Points lifted = plane;
+    for (std::array<float, 3> &p : lifted) {
+        p[2] = 1.0F;
+    }
+    EXPECT_DOUBLE_EQ(da3::fusion::chamfer_l1(plane, lifted), 1.0);
+    EXPECT_DOUBLE_EQ(da3::fusion::chamfer_l1(plane, lifted), da3::fusion::chamfer_l1(lifted, plane));
 }
 
 int main(int argc, char **argv) {

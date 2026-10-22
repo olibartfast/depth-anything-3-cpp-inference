@@ -25,6 +25,13 @@ Status values: `idea`, `planned`, `in progress`, `done`, `blocked`, `deferred`.
 - **Why it matters:** It determines whether C++ any-view support is a thin next slice or a separate project.
 - **Spec:** A future dated packet.
 
+## Phase 4 — RealSense capture and metric reference
+
+- **Status:** In progress.
+- **Outcome:** `inference_app` captures color plus aligned depth from an Intel RealSense camera in C++ (`-DUSE_REALSENSE=ON`), writes exact intrinsics, and feeds the existing metric pipeline.
+- **Why it matters:** The D435 provides real metric depth on the same frames, which lets the camera-depth checkpoints be checked against physical measurements without a Python runtime.
+- **Spec:** [RealSense capture](2026-10-21-da3-realsense-capture/requirements.md) · branch `spec/da3-realsense-capture`.
+
 ## Phase 1-GPU — GPU gate (Brev full gate, Colab partial)
 
 - **Status:** In progress.
@@ -49,3 +56,4 @@ The following remain out of scope until the Phase 3 design and a licensing revie
 - The DA3-BENCH benchmark pipeline, which is research tooling rather than part of the C++ runtime.
 
 _Revision: 2026-10-11 — initial thin slicing; replan after Phase 1 validation._
+_Revision: 2026-10-21 — added Phase 4 (RealSense capture) after the D435 hardware arrived._

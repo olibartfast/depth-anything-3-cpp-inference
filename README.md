@@ -46,6 +46,8 @@ Other useful upstream links:
 - **ImageNet normalization** matching the Python reference implementation
 - **Aspect-ratio-preserving resize** with DINOv2 patch-size divisibility (multiples of 14)
 - **Depth colormap visualization** using OpenCV's INFERNO colormap
+- **Optional live capture**: Intel RealSense color plus aligned depth, captured
+  in-process (no Python) when built with `-DUSE_REALSENSE=ON`
 - **Optional confidence map** output
 - **Unit tests** using Google Test (no downloaded model required)
 - **Google Benchmark** support for preprocessing benchmarks
@@ -72,6 +74,11 @@ Other useful upstream links:
 - **TensorRT**: Version 11.2.1.2 (same pin as rf-detr-cpp-inference; downloaded during CMake configure; strongly typed — engine precision follows the ONNX graph)
 - **CUDA Toolkit**: Version 13.3 must be installed; CMake locates it with `find_package(CUDAToolkit)`
 - **Platform**: Linux with NVIDIA GPU
+
+#### RealSense Capture (Optional)
+- **librealsense2**: Version 2.59.1. CMake uses a system package when present, otherwise builds the pinned source automatically. Requires `libusb-1.0-0-dev` and `libudev-dev`.
+- **Enabled by**: `-DUSE_REALSENSE=ON` (default `OFF`). Default builds, Docker, and CI need no RealSense dependency.
+- **udev rules**: required once for non-root USB access on Linux.
 
 ---
 
@@ -153,6 +160,22 @@ sudo apt-get install -y ninja-build
 sudo apt-get install -y clang-format-18 clang-tidy-18
 ```
 
+### RealSense udev Rules (once, for non-root access)
+
+The D435's USB node is not writable by a normal user until the librealsense udev
+rules are installed. The rules ship with the SDK source:
+
+```bash
+sudo cp build-rs/_deps/librealsense-src/config/99-realsense-libusb.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+# replug the camera
+```
+
+With a system librealsense install the same file is usually at
+`/etc/udev/rules.d/99-realsense-libusb.rules` already after the package installs
+its rules.
+
 ---
 
 ## Building
@@ -199,12 +222,29 @@ cmake -S . -B build -G Ninja \
 cmake --build build --parallel
 ```
 
+### Build with RealSense Capture (Optional)
+
+RealSense support is additive: the backend choice is unchanged.
+
+```bash
+cmake -S . -B build-rs -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DUSE_REALSENSE=ON
+cmake --build build-rs --parallel
+```
+
+CMake first looks for a system `realsense2` package, then builds pinned
+librealsense v2.59.1 into `build-rs/_deps`. The first configure downloads the
+source, so it needs network access once. A binary built without the flag reports
+that `--input-realsense` needs `-DUSE_REALSENSE=ON`.
+
 ### Build Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `-DUSE_ONNX_RUNTIME=ON/OFF` | ON | Enable ONNX Runtime backend |
 | `-DUSE_TENSORRT=ON/OFF` | OFF | Enable TensorRT backend |
+| `-DUSE_REALSENSE=ON/OFF` | OFF | Enable Intel RealSense capture (`--input-realsense`) |
 | `-DCMAKE_BUILD_TYPE=Release/Debug` | — | Build configuration |
 | `-DSANITIZERS=ON/OFF` | OFF | Enable AddressSanitizer + UBSan |
 | `-DWERROR=ON/OFF` | OFF | Treat warnings as errors |
@@ -235,6 +275,10 @@ The output depth colormap is saved as **`output_depth.jpg`** in the current dire
 ./build/inference_app model.onnx image.jpg --task metric --camera d435 --focal 600
 # Multi-view: pass a directory (sorted *.jpg/*.jpeg/*.png → output_depth_%03d.jpg)
 ./build/inference_app model.onnx ./views/ --task multiview
+# RealSense: capture 3 frames + aligned depth, then run the metric path with
+# the device's own focal length (requires -DUSE_REALSENSE=ON)
+./build-rs/inference_app model.onnx --input-realsense 3 --camera d435 --task metric \
+  --capture-dir captures/d435
 # Pose: poses.txt (N×12 world-to-camera) + intrinsics.txt (N×4 fx fy cx cy)
 ./build/inference_app model.onnx ./views/ --task pose [--use-ray-pose]
 # Dense reconstruction → output_cloud.ply (ASCII, x y z r g b)
@@ -259,6 +303,48 @@ Notes:
 - Tasks whose head the loaded ONNX graph lacks degrade gracefully with a warning: identity poses, a depth-lifted cloud, or placeholder Gaussians. They never produce a silent wrong result.
 - Licenses: Small, Base, Mono, and Metric are Apache-2.0. Large, Giant, and Nested are CC BY-NC 4.0; prefer the `-1.1` checkpoints.
 
+### RealSense Capture
+
+`--input-realsense N` captures `N` frames into a structured directory and then
+runs the normal directory path, so `mono`, `metric`, `multiview`, `pose`,
+`reconstruction`, and `gaussian` all work unchanged:
+
+```bash
+./build-rs/inference_app model.onnx --input-realsense 3 \
+  --camera d435 --task metric --capture-dir captures/d435
+```
+
+The capture directory holds:
+
+```
+captures/d435/
+  color/000.png … 002.png    lossless BGR
+  depth/000.png … 002.png    16-bit millimetres, aligned to color
+  intrinsics.txt              fx fy cx cy per line (existing format)
+  capture.txt                 device, size, counts, timestamps
+```
+
+`--focal` is optional with a RealSense source: when omitted, the metric focal is
+`mean(fx, fy)` from the active color stream. An explicit `--focal` still wins.
+Depth and color are captured in the same pass, so the hardware depth can be used
+as a later reference for the DA3 metric output.
+
+Use `--rs-size WxH` (default `1280x720`) and `--rs-fps K` (default `30`) to pick
+the color stream. Depth uses the device default profile at the same rate and is
+resampled to the color resolution. A directory passed with `--capture-dir` is
+created if needed; otherwise captures go under
+`<output-dir>/realsense_<timestamp>/`.
+
+**Troubleshooting**
+
+- **"No device connected" with the camera plugged in:** both the USB device node
+  and the UVC `/dev/video*` nodes must be accessible. Install the librealsense
+  udev rules for the USB node, and grant the user access to the video nodes
+  (`video` group or a `video4linux` udev rule).
+- **"Frame didn't arrive" or incomplete frames:** check the negotiated link with
+  `lsusb -t`. D400 cameras are USB 3 devices; on a USB 2 port they may enumerate
+  and expose profiles but fail to stream. Use a USB 3 port and a USB 3 cable.
+
 ### With Confidence Map
 
 ```bash
@@ -282,7 +368,7 @@ Saves `output_depth.jpg` and `output_conf.jpg`.
 ### Full Usage
 
 ```
-Usage: ./build/inference_app <path_to_model> <path_to_image|dir> [options]
+Usage: ./build/inference_app <path_to_model> [<path_to_image|dir>] [options]
 
 Arguments:
   path_to_model   ONNX model (.onnx) or TensorRT engine (.engine / .trt)
@@ -312,6 +398,15 @@ Options:
                     Extract frames via cv::VideoCapture into a temporary
                     directory, then run the directory path (pairs with --fps)
   --fps K           Sample K frames per second from --input-video (default: all)
+  --input-realsense N
+                    Capture N frames from an Intel RealSense camera, then run
+                    the directory path. Requires -DUSE_REALSENSE=ON. Reads
+                    exact color intrinsics and aligned depth; auto-fills
+                    --focal when absent
+  --rs-size WxH     RealSense color size (default: 1280x720)
+  --rs-fps K        RealSense frame rate (default: 30)
+  --capture-dir DIR Keep captured color/ and depth/ in DIR (default:
+                    <output-dir>/realsense_<timestamp>)
   --help            Show help and exit
 ```
 
@@ -483,7 +578,7 @@ GitHub Actions runs `.github/workflows/ci.yml` for pushes and pull requests targ
 | `Clang-Tidy` | `clang-analyzer-*` and `bugprone-*` findings fail; the full configured report is uploaded as an artifact |
 | `Cppcheck` | `warning`, `performance`, and `portability` findings fail |
 | `Coverage` | gcov line coverage floor on the tested library surface, plus diff coverage on changed lines |
-| `Benchmark regression` | Google Benchmark medians compared with the stored `gh-pages` baseline; 150% of the stored median fails |
+| `Benchmark regression` | Google Benchmark medians compared with the stored `benchmark-data` baseline; 150% of the stored median fails |
 | `Docker build` | Builds the multi-stage image on Ubuntu 24.04 and smoke-tests `inference_app --help` |
 | `Quality Gate` | Aggregates the jobs above; required status check |
 
@@ -497,7 +592,7 @@ The coverage gate is calibrated to the model-free test surface. It enforces 80% 
 
 ### Benchmarks
 
-Benchmark data is stored in the `gh-pages` branch by `github-action-benchmark`. Pushes to `master` update the baseline; pull requests compare against it and fail at 150% of the stored median. The threshold is deliberately loose because hosted runners are noisy; tighten it after collecting stable history. The dashboard is at <https://olibartfast.ninja/depth-anything-3-cpp-inference/benchmarks/> (the site root redirects there).
+Benchmark data is stored on the `benchmark-data` branch by `github-action-benchmark`, as a plain data branch with no published site. Pushes to `master` update the baseline; pull requests compare against it and fail at 150% of the stored median. The threshold is deliberately loose because hosted runners are noisy; tighten it after collecting stable history.
 
 ### Formatting and static analysis
 

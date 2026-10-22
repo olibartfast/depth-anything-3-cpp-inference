@@ -7,6 +7,8 @@
 #
 # The TensorRT backend is excluded because the default CI configuration does
 # not install TensorRT (USE_TENSORRT=OFF), so it has no compile command.
+# The RealSense source is excluded for the same reason: it only builds with
+# -DUSE_REALSENSE=ON, which the tidy job does not set.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
@@ -30,7 +32,7 @@ if [[ "${STRICT_TIDY:-false}" == "true" ]]; then
     warnings_as_errors="*"
 fi
 
-mapfile -t files < <(find src -name '*.cpp' ! -name 'tensorrt_backend.cpp' | sort)
+mapfile -t files < <(find src -name '*.cpp' ! -name 'tensorrt_backend.cpp' ! -name 'realsense_source.cpp' | sort)
 if [[ ${#files[@]} -eq 0 ]]; then
     echo "::error::no source files found for clang-tidy" >&2
     exit 2

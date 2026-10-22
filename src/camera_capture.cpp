@@ -34,6 +34,65 @@ cv::Mat to_bgr(const cv::Mat &image) {
     return bgr;
 }
 
+void validate_config(const CaptureConfig &config) {
+    if (config.frames <= 0) {
+        throw std::invalid_argument("Capture frame count must be positive");
+    }
+    if (config.width <= 0 || config.height <= 0) {
+        throw std::invalid_argument("Capture size must be positive");
+    }
+    if (config.fps <= 0) {
+        throw std::invalid_argument("Capture fps must be positive");
+    }
+}
+
+Frame read_frame(Source &source, int index, int total) {
+    Frame frame;
+    if (!source.next(frame)) {
+        throw std::runtime_error("Capture stream ended after " + std::to_string(index) + " of " +
+                                 std::to_string(total) + " frame(s)");
+    }
+    if (frame.color_bgr.empty()) {
+        throw std::runtime_error("Capture source returned an empty color frame");
+    }
+    if (!frame.intrinsics.valid()) {
+        throw std::runtime_error("Capture source returned invalid intrinsics");
+    }
+    return frame;
+}
+
+bool write_depth_frame(const Frame &frame, const cv::Mat &color, const std::filesystem::path &depth_dir,
+                       const std::string &name) {
+    if (frame.depth_mm.empty()) {
+        return false;
+    }
+    if (frame.depth_mm.type() != CV_16UC1) {
+        throw std::runtime_error("Capture depth frame must be 16-bit single-channel (type " +
+                                 std::to_string(frame.depth_mm.type()) + ")");
+    }
+    if (frame.depth_mm.size() != color.size()) {
+        throw std::runtime_error("Capture depth frame is not aligned with the color frame");
+    }
+    if (!cv::imwrite((depth_dir / name).string(), frame.depth_mm)) {
+        throw std::runtime_error("Could not write depth frame to " + (depth_dir / name).string());
+    }
+    return true;
+}
+
+void write_intrinsics_txt(const std::filesystem::path &path, const std::vector<Intrinsics> &intrinsics) {
+    std::ofstream out(path);
+    if (!out) {
+        throw std::runtime_error("Could not write intrinsics to " + path.string());
+    }
+    out << std::setprecision(6);
+    for (const Intrinsics &intrinsic : intrinsics) {
+        out << intrinsic.fx << ' ' << intrinsic.fy << ' ' << intrinsic.cx << ' ' << intrinsic.cy << '\n';
+    }
+    if (!out) {
+        throw std::runtime_error("Could not finish writing intrinsics to " + path.string());
+    }
+}
+
 void write_metadata(const std::filesystem::path &path, const std::string &device, const CaptureConfig &config,
                     const CaptureResult &result, const std::vector<std::uint64_t> &timestamps) {
     std::ofstream out(path);
@@ -62,15 +121,7 @@ void write_metadata(const std::filesystem::path &path, const std::string &device
 float focal_px(const Intrinsics &intrinsics) noexcept { return 0.5F * (intrinsics.fx + intrinsics.fy); }
 
 CaptureResult capture_to_directory(Source &source, const CaptureConfig &config, const std::filesystem::path &root) {
-    if (config.frames <= 0) {
-        throw std::invalid_argument("Capture frame count must be positive");
-    }
-    if (config.width <= 0 || config.height <= 0) {
-        throw std::invalid_argument("Capture size must be positive");
-    }
-    if (config.fps <= 0) {
-        throw std::invalid_argument("Capture fps must be positive");
-    }
+    validate_config(config);
 
     const std::filesystem::path color_dir = root / "color";
     const std::filesystem::path depth_dir = root / "depth";
@@ -85,18 +136,7 @@ CaptureResult capture_to_directory(Source &source, const CaptureConfig &config, 
     timestamps.reserve(static_cast<std::size_t>(config.frames));
 
     for (int index = 0; index < config.frames; ++index) {
-        Frame frame;
-        if (!source.next(frame)) {
-            throw std::runtime_error("Capture stream ended after " + std::to_string(index) + " of " +
-                                     std::to_string(config.frames) + " frame(s)");
-        }
-        if (frame.color_bgr.empty()) {
-            throw std::runtime_error("Capture source returned an empty color frame");
-        }
-        if (!frame.intrinsics.valid()) {
-            throw std::runtime_error("Capture source returned invalid intrinsics");
-        }
-
+        Frame frame = read_frame(source, index, config.frames);
         const cv::Mat color = to_bgr(frame.color_bgr);
         if (index == 0) {
             result.intrinsics = frame.intrinsics;
@@ -105,39 +145,15 @@ CaptureResult capture_to_directory(Source &source, const CaptureConfig &config, 
         if (!cv::imwrite((color_dir / name).string(), color)) {
             throw std::runtime_error("Could not write color frame to " + (color_dir / name).string());
         }
-
-        if (!frame.depth_mm.empty()) {
-            if (frame.depth_mm.type() != CV_16UC1) {
-                throw std::runtime_error("Capture depth frame must be 16-bit single-channel (type " +
-                                         std::to_string(frame.depth_mm.type()) + ")");
-            }
-            if (frame.depth_mm.size() != color.size()) {
-                throw std::runtime_error("Capture depth frame is not aligned with the color frame");
-            }
-            if (!cv::imwrite((depth_dir / name).string(), frame.depth_mm)) {
-                throw std::runtime_error("Could not write depth frame to " + (depth_dir / name).string());
-            }
+        if (write_depth_frame(frame, color, depth_dir, name)) {
             ++result.depth_frames;
         }
-
         intrinsics.push_back(frame.intrinsics);
         timestamps.push_back(frame.timestamp_ms);
         ++result.frames;
     }
 
-    const std::filesystem::path intrinsics_path = root / "intrinsics.txt";
-    std::ofstream intrinsics_out(intrinsics_path);
-    if (!intrinsics_out) {
-        throw std::runtime_error("Could not write intrinsics to " + intrinsics_path.string());
-    }
-    intrinsics_out << std::setprecision(6);
-    for (const Intrinsics &intrinsic : intrinsics) {
-        intrinsics_out << intrinsic.fx << ' ' << intrinsic.fy << ' ' << intrinsic.cx << ' ' << intrinsic.cy << '\n';
-    }
-    if (!intrinsics_out) {
-        throw std::runtime_error("Could not finish writing intrinsics to " + intrinsics_path.string());
-    }
-
+    write_intrinsics_txt(root / "intrinsics.txt", intrinsics);
     write_metadata(root / "capture.txt", source.device_name(), config, result, timestamps);
     return result;
 }

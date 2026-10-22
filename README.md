@@ -122,11 +122,13 @@ Other useful upstream links:
    | `DA3Mono-Large` | 350M | Apache-2.0 | Monocular-optimized |
    | `DA3Metric-Large` | 350M | Apache-2.0 | Metric depth (real-world scale) |
 
-   > **License note**: the Small/Base/Mono/Metric and camera-base checkpoints are **Apache-2.0**;
-   > the Large/Giant/Nested checkpoints are **CC BY-NC 4.0** (non-commercial). For Large, Giant and
-   > Nested, prefer the retrained `-1.1` checkpoints for better quality.
+   > **License note**: the DA3 Small/Base/Mono/Metric checkpoints are **Apache-2.0**;
+   > the DA3 Large/Giant/Nested checkpoints are **CC BY-NC 4.0** (non-commercial). For Large, Giant and
+   > Nested, prefer the retrained `-1.1` checkpoints for better quality. The camera-depth
+   > checkpoints below are a separate **CC BY-NC 4.0** family (see their note).
 
-4. **Camera-depth model variants** (trained per camera model, on
+4. **Camera-depth model variants** (a separate Camera Depth Model family, trained per camera
+   model, on
    [depth-anything/camera-depth-models](https://huggingface.co/collections/depth-anything/camera-depth-models)):
 
    | Model | Target device | Notes |
@@ -137,7 +139,14 @@ Other useful upstream links:
    | `kinect` | Microsoft Kinect | Camera-specific depth |
    | `zed2i-neural` | Stereolabs ZED 2i | Neural (stacked) variant |
    | `zed2i-quality` | Stereolabs ZED 2i | Quality (stacked) variant |
-   | `base` | Generic RGB camera | Camera-base model (Apache-2.0) |
+   | `base` | Generic RGB camera | Camera-base variant |
+
+   > **Camera-depth note**: these are **Camera Depth Models (CDM)**, not Depth Anything 3
+   > checkpoints. They take RGB **plus sensor depth** (4-channel input), ship as `.ckpt`/`.pth`
+   > with no DA3 `config.json`, and are **CC BY-NC 4.0**. They cannot be exported with
+   > `export_onnx.py` or loaded by `inference_app`; `export_onnx.py --model-name d435` exits
+   > with that explanation. `--camera` in the CLI is advisory: it selects the recommended HF
+   > identifier, drives the metric-scaling default, and never changes the loaded graph.
 
 ---
 

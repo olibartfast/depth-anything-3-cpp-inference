@@ -135,7 +135,8 @@ struct Options {
     TaskType task{TaskType::mono};
     CameraPreset camera{CameraPreset::none}; // --camera preset; none -> unset
     float focal{500.0f};
-    bool focal_set{false};            // true when --focal was passed; else 1.2*W default
+    bool focal_set{false};            // true only when the user passed --focal; else 1.2*W default
+    bool focal_from_device{false};    // true when --input-realsense supplied intrinsics (not a user override)
     std::filesystem::path input_dir;  // overrides the positional <image> when set
     std::filesystem::path output_dir; // empty -> current directory
     bool already_metric{false};
@@ -160,9 +161,15 @@ struct Options {
     std::optional<da3::fusion::FusionMode> fusion_mode;
     std::filesystem::path fusion_out; // empty -> <output-dir>
 
+    /// True when `focal` came from either the CLI (`--focal`) or RealSense
+    /// intrinsics, rather than falling back to 1.2*W.
+    [[nodiscard]] bool focal_known() const noexcept { return focal_set || focal_from_device; }
+
     /// True when metric scaling must be skipped: either the user passed
     /// --already-metric, or the camera preset implies meters on its own
-    /// (`base` preset). An explicit --focal always wins.
+    /// (`base` preset). Only an explicit user --focal overrides the preset;
+    /// a device-derived focal (focal_from_device) is not a user override and
+    /// therefore keeps `base` already-metric.
     [[nodiscard]] bool skip_metric_scaling() const noexcept {
         return already_metric || camera_implies_already_metric(camera, focal_set);
     }
@@ -205,7 +212,8 @@ static void print_usage(std::ostream &os, const char *program) {
     os << "                    Capture N frames from an Intel RealSense camera,\n";
     os << "                    then run the directory path. Requires a build with\n";
     os << "                    -DUSE_REALSENSE=ON. Reads exact color intrinsics\n";
-    os << "                    and aligned depth; auto-fills --focal when absent.\n";
+    os << "                    and aligned depth; auto-fills focal from the\n";
+    os << "                    device intrinsics when --focal is absent.\n";
     os << "  --rs-size WxH     RealSense color size (default: 1280x720)\n";
     os << "  --rs-fps K        RealSense frame rate (default: 30)\n";
     os << "  --capture-dir DIR Keep captured color/ and depth/ in DIR\n";
@@ -244,6 +252,10 @@ static void print_usage(std::ostream &os, const char *program) {
     os << "                                         skips scaling unless --focal given\n";
     os << "  No fx/fy values are baked in: pass --focal PX with your per-device\n";
     os << "  calibration. --focal always wins over the preset default.\n";
+    os << "  Note: camera-depth checkpoints are a separate Camera Depth Model (CDM)\n";
+    os << "        family: RGB+depth input, .ckpt/.pth, CC BY-NC 4.0, not DA3 and\n";
+    os << "        not exportable with export_onnx.py. --camera is advisory here:\n";
+    os << "        it selects the recommended HF id and the metric default only.\n";
     os << "\n";
     os << "License: DA3-Small/Base/Mono/Metric are Apache-2.0; DA3-Large/Giant/Nested\n";
     os << "         are CC BY-NC 4.0 (non-commercial). Prefer the -1.1 weights.\n";
@@ -313,7 +325,7 @@ static void fill_frame_data(const DepthAnything3Inference &inference, DepthResul
     frame_out->depth = result.depth;
     const int h = result.depth.rows;
     const int w = result.depth.cols;
-    const float focal = opts.focal_set ? opts.focal : tasks::default_focal(w);
+    const float focal = opts.focal_known() ? opts.focal : tasks::default_focal(w);
     frame_out->intrinsics = {focal, focal, static_cast<float>(w) / 2.0f, static_cast<float>(h) / 2.0f};
     frame_out->pose_from_model = inference.get_pose_view(view, frame_out->pose, frame_out->intrinsics);
 
@@ -888,8 +900,9 @@ int main(int argc, const char *argv[]) {
                       << " cx=" << captured.intrinsics.cx << " cy=" << captured.intrinsics.cy << std::endl;
             if (!opts.focal_set) {
                 opts.focal = da3::camera::focal_px(captured.intrinsics);
-                opts.focal_set = true;
-                std::cout << "Focal from device intrinsics: " << opts.focal << " px (mean of fx and fy)" << std::endl;
+                opts.focal_from_device = true;
+                std::cout << "Focal from device intrinsics: " << opts.focal
+                          << " px (mean of fx and fy; device-derived, not an explicit --focal)" << std::endl;
             }
             input = captured.frames == 1 ? capture_root / "color" / "000.png" : capture_root / "color";
 #else

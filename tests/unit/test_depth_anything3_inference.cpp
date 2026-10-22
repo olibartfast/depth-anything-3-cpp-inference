@@ -591,6 +591,29 @@ TEST(CameraFocalPrecedence, ExplicitFocalWins) {
     EXPECT_FALSE(camera_implies_already_metric(CameraPreset::none, false));
 }
 
+TEST(CameraFocalProvenance, DeviceFilledFocalSkipsScalingForBase) {
+    // --input-realsense auto-fills Options::focal and sets focal_from_device,
+    // but must leave focal_set false (the user passed no --focal). The
+    // already-metric rule therefore still sees a device-derived focal as no
+    // override, so `--camera base` skips focal*net/300 scaling instead of
+    // multiplying already-metric depth by mean(fx,fy)/500 (R-1).
+    constexpr bool focal_from_user = false; // focal came from the device
+    EXPECT_TRUE(camera_implies_already_metric(CameraPreset::base, focal_from_user));
+}
+
+TEST(CameraFocalProvenance, UserFocalScalesBasePreset) {
+    // An explicit --focal sets focal_set and overrides the preset's
+    // already-metric default, so scaling still runs for `--camera base`.
+    constexpr bool focal_from_user = true;
+    EXPECT_FALSE(camera_implies_already_metric(CameraPreset::base, focal_from_user));
+}
+
+TEST(CameraFocalProvenance, UserFocalScalesNonBasePreset) {
+    // Non-base presets are not already-metric: an explicit --focal scales.
+    constexpr bool focal_from_user = true;
+    EXPECT_FALSE(camera_implies_already_metric(CameraPreset::d435, focal_from_user));
+}
+
 // ============================================================================
 // N-view batch API (Phase B): run_inference_batch + postprocess_view +
 // get_pose_view against a mock [N,H,W] / [N,3,4] / [N,3,3] backend.

@@ -340,15 +340,24 @@ def _resolve_model_id(model_name: str) -> str:
     """Resolve --model-name to a Hugging Face repo id.
 
     Camera-depth ids (d405, d435, l515, kinect, zed2i-neural, zed2i-quality,
-    base; case-insensitive) resolve under the
-    depth-anything/camera-depth-models collection; anything else keeps the
-    legacy depth-anything/<UPPER> mapping.
+    base; case-insensitive) name the separate Camera Depth Model (CDM) family
+    in depth-anything/camera-depth-models. Those checkpoints are RGB-D
+    (4-channel input), ship as .ckpt/.pth without a DA3 config, and are
+    licensed CC BY-NC 4.0. They cannot be exported through this DA3 path, so
+    the request fails here with guidance instead of a confusing load error.
+    Anything else keeps the legacy depth-anything/<UPPER> mapping.
     """
     slug = model_name.strip().lower()
     if slug in _CAMERA_IDS:
         repo = f"depth-anything/camera-depth-model-{slug}"
-        print(f"Camera-depth model: {repo} (collection depth-anything/camera-depth-models)")
-        return repo
+        raise ValueError(
+            f"'{model_name}' resolves to {repo}, a Camera Depth Model (CDM), not a "
+            "Depth Anything 3 checkpoint. CDM models take RGB plus sensor depth "
+            "(4-channel input), ship as .ckpt/.pth with no DA3 config, and are "
+            "CC BY-NC 4.0; this exporter cannot convert them. Export a DA3 "
+            "checkpoint instead (for example --model-name da3-large-1.1), or "
+            "port the CDM architecture separately."
+        )
     return f"depth-anything/{model_name.upper()}"
 
 
@@ -439,7 +448,12 @@ def main() -> int:
     if args.model_dir is not None:
         model = _load_model(args.model_dir, device)
     else:
-        model = DepthAnything3.from_pretrained(_resolve_model_id(args.model_name))
+        try:
+            repo = _resolve_model_id(args.model_name)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        model = DepthAnything3.from_pretrained(repo)
         model = model.to(device=device)
     model.eval()
 

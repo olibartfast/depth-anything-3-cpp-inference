@@ -5,7 +5,7 @@ packet: the D435 preset already exists, but the CLI only accepts files, director
 files. This packet closes the gap between "camera on the desk" and "camera-depth checkpoint".
 
 - **Spec:** `specs/2026-10-21-da3-realsense-capture/`
-- **Branch:** `spec/da3-realsense-capture`, branched from `master`.
+- **Branch:** landed directly on `master` (no feature branch was used).
 - **Hardware:** Intel RealSense D435 (USB `8086:0b07`), firmware untouched.
 
 ## Goal

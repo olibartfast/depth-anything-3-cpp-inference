@@ -55,7 +55,7 @@ the input image order and defines the pose row order.
 | Input images | all | Ordered RGB frames passed to the normal inference path. |
 | `poses.txt` | `a`, `b` | One row per frame: 12 floats, row-major **world-to-camera (w2c)** 3x4 `[R \| t]`. Searched in the input directory first, then the output directory. One row must exist per accumulated frame. |
 | Sibling `depth/` directory | `a` as depth source, `b` as scale reference | External capture depth next to the image directory (or its parent). 16-bit PNG values are millimetres and are converted to metres; `CV_32F`/`CV_64F` depth is treated as metres. Missing or unreadable frames stay empty: `a` falls back per frame to DA3 depth, and `b` skips alignment for that frame. |
-| `FrameData::intrinsics` | all | Derived from `--focal`, the RealSense device, or the model; rescaled to the actual depth resolution before integration. The runner does not read `intrinsics.txt`. |
+| `FrameData::intrinsics` | all | From `--focal`, or the RealSense device mean focal when auto-filled; rescaled to the actual depth resolution before integration. The runner does not read `intrinsics.txt`. |
 | `--dump-raw` output | none | Not required by fusion; the runner works from the postprocessed depth in memory. |
 
 Both text artifacts use the exact `--task pose` formats, so a run remains

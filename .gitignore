@@ -1,6 +1,8 @@
 build
 build-*
 output
+output_*
+captures
 *.pt
 *.pth
 *.onnx

@@ -30,7 +30,7 @@ Status values: `idea`, `planned`, `in progress`, `done`, `blocked`, `deferred`.
 - **Status:** In progress.
 - **Outcome:** `inference_app` captures color plus aligned depth from an Intel RealSense camera in C++ (`-DUSE_REALSENSE=ON`), writes exact intrinsics, and feeds the existing metric pipeline.
 - **Why it matters:** The D435 provides real metric depth on the same frames, which lets the camera-depth checkpoints be checked against physical measurements without a Python runtime.
-- **Spec:** [RealSense capture](2026-10-21-da3-realsense-capture/requirements.md) · branch `spec/da3-realsense-capture`.
+- **Spec:** [RealSense capture](2026-10-21-da3-realsense-capture/requirements.md) · landed on `master`.
 
 ## Phase 1-GPU — GPU gate (Brev full gate, Colab partial)
 

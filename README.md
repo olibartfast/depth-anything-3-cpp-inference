@@ -310,9 +310,16 @@ runs the normal directory path, so `mono`, `metric`, `multiview`, `pose`,
 `reconstruction`, and `gaussian` all work unchanged:
 
 ```bash
-./build-rs/inference_app model.onnx --input-realsense 3 \
+./build-rs/inference_app <model.onnx> --input-realsense 3 \
   --camera d435 --task metric --capture-dir captures/d435
 ```
+
+`<model.onnx>` is your exported model (`export_onnx.py --output model.onnx`;
+for a smoke test without real weights,
+`tests/fixtures/tiny_depth.onnx` loads and runs). Capture happens before
+the model is opened, so a bad model path still captures frames and then
+exits non-zero — pass a valid model to get depth outputs too. `captures/`
+is created by the run; it is not in the repo.
 
 The capture directory holds:
 
@@ -326,6 +333,9 @@ captures/d435/
 
 `--focal` is optional with a RealSense source: when omitted, the metric focal is
 `mean(fx, fy)` from the active color stream. An explicit `--focal` still wins.
+Only the mean focal carries over — per-frame pose/fusion intrinsics reuse it
+with a centred principal point, not the device `cx/cy` (exact device values
+stay in the capture directory's `intrinsics.txt`).
 Depth and color are captured in the same pass, so the hardware depth can be used
 as a later reference for the DA3 metric output.
 

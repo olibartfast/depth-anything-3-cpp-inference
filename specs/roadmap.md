@@ -40,6 +40,13 @@ Status values: `idea`, `planned`, `in progress`, `done`, `blocked`, `deferred`.
 - **Why it matters:** It shows the rented-GPU pattern from the tritonic and rf-detr projects transfers to DA3.
 - **Spec:** [GPU gate](2026-10-11-da3-gpu-gate/requirements.md) · branch `spec/da3-gpu-gate`.
 
+## Phase 5 — Fusion validation and tracking
+
+- **Status:** Planned.
+- **Outcome:** Measured A/B/C evidence on a hand-held D435 sequence, an ICP pose provider, known Open3D pin, confidence-weighted integration, and a closed camera-depth input question.
+- **Why it matters:** The fusion front end shipped without a moving-camera experiment. Static captures cannot validate TSDF integration.
+- **Spec:** [Fusion validation](2026-10-23-da3-fusion-validation/requirements.md) · branch `spec/da3-fusion-validation`.
+
 ## Deferred and revisit work
 
 These efforts keep unresolved items visible rather than silently dropping them. Every item ends either green or `BLOCKED` with a dated reason.

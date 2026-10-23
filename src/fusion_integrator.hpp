@@ -22,6 +22,20 @@
 // the fallback path transforms points with that same c2w matrix so both
 // backends agree. `trajectory_c2w()` returns the converted poses.
 //
+// Confidence weighting
+// --------------------
+// When a per-pixel confidence map is supplied and `Options::conf_weighting` is
+// true (the default), the fallback accumulates each sample with
+// `w = clamp(conf, 0, 1)` and writes the weighted mean per spatial bin at
+// extraction time. Non-finite confidence samples are skipped. Callers that do
+// not pass a confidence map keep the original uniform-weight behaviour.
+//
+// The pinned Open3D tensor SLAM `Frame`/`Model` surface exposes no per-sample
+// weight tensor: `Integrate`/`ProcessFrame` assign the same weight to every
+// valid depth sample. The Open3D backend therefore ignores confidence and the
+// fallback path is the confidence-weighted implementation. This limitation is
+// documented in docs/fusion.md.
+//
 // Thread safety: a single instance is not internally synchronized. Use one
 // instance per thread or serialize calls externally.
 
@@ -29,6 +43,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -37,6 +52,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <map>
 #include <memory>
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -80,7 +96,8 @@ class FusionIntegrator {
   public:
     /// Tuning knobs shared by both backends.
     struct Options {
-        /// Open3D TSDF voxel edge length (metres). Ignored by the fallback.
+        /// Open3D TSDF voxel edge length (metres). The fallback uses the same
+        /// length as the spatial bin for confidence-weighted extraction.
         float voxel_length{0.01F};
         /// Open3D TSDF truncation distance (metres). Ignored by the fallback.
         float sdf_trunc{0.04F};
@@ -95,6 +112,10 @@ class FusionIntegrator {
         float max_depth_m{3.0F};
         /// Safety cap on fallback points; values <= 0 mean unlimited.
         std::size_t max_points{8000000};
+        /// Weight fallback samples by an optional per-pixel confidence map.
+        /// Enabled by default: when `integrate()` receives an empty map the
+        /// behaviour is identical to the original uniform-weight fallback.
+        bool conf_weighting{true};
     };
 
     FusionIntegrator() = default;
@@ -110,10 +131,17 @@ class FusionIntegrator {
     /// @param pose_w2c    Row-major 3x4 world-to-camera pose:
     ///                    r11 r12 r13 tx r21 r22 r23 ty r31 r32 r33 tz.
     /// @param k           Pinhole intrinsics in pixels for the depth resolution.
+    /// @param confidence  Optional single-channel per-pixel confidence map at
+    ///                    the depth resolution (CV_32F or CV_64F). Values are
+    ///                    clamped to [0,1]; non-finite samples are skipped. The
+    ///                    fallback weights samples by this map when
+    ///                    Options::conf_weighting is true. Empty keeps the
+    ///                    original uniform-weight behaviour.
     /// @returns true when the frame was integrated and appended to the
     ///          trajectory; false for malformed input or a backend failure.
     [[nodiscard]] bool integrate(const cv::Mat &depth_m, const cv::Mat &color_bgr,
-                                 const std::array<float, 12> &pose_w2c, const Pinhole &k) {
+                                 const std::array<float, 12> &pose_w2c, const Pinhole &k,
+                                 const cv::Mat &confidence = cv::Mat()) {
         if (depth_m.empty() || depth_m.channels() != 1) {
             return false;
         }
@@ -139,6 +167,25 @@ class FusionIntegrator {
             return false;
         }
 
+        cv::Mat conf;
+        if (!confidence.empty()) {
+            if (confidence.channels() != 1 || confidence.rows != depth.rows || confidence.cols != depth.cols) {
+                return false;
+            }
+            if (confidence.type() == CV_32FC1) {
+                conf = confidence;
+            } else if (confidence.type() == CV_64FC1) {
+                confidence.convertTo(conf, CV_32F);
+            } else {
+                return false;
+            }
+        }
+
+        // Open3D's tensor SLAM Frame carries depth, colour and pose only; the
+        // pinned API exposes no per-sample weight input, so confidence
+        // weighting is implemented by the fallback backend below. Do not
+        // silently pretend the Open3D path is weighted: docs/fusion.md records
+        // this limitation for R-5.
 #ifdef DA3_FUSION_USE_OPEN3D
         if (ensure_open3d_()) {
             const cv::Mat color = prepare_color_(color_bgr, depth.rows, depth.cols);
@@ -153,7 +200,7 @@ class FusionIntegrator {
         }
 #endif
 
-        if (!accumulate_fallback_(depth, color_bgr, pose_c2w, k)) {
+        if (!accumulate_fallback_(depth, color_bgr, pose_c2w, k, conf)) {
             return false;
         }
         trajectory_.push_back(pose_c2w);
@@ -164,7 +211,9 @@ class FusionIntegrator {
     ///
     /// With Open3D this writes the extracted triangle mesh (falling back to the
     /// extracted point cloud when the TSDF has no surface). Without Open3D, the
-    /// accumulated back-projected points are written as ASCII PLY.
+    /// accumulated back-projected points are written as ASCII PLY. Once a
+    /// confidence map has been integrated, the fallback writes one weighted
+    /// mean point per spatial bin instead of one point per observation.
     ///
     /// @returns true when a file was written; false when there is no geometry
     ///          yet or the file could not be opened.
@@ -200,6 +249,9 @@ class FusionIntegrator {
         if (points_.empty()) {
             return false;
         }
+        if (confidence_weighting_active_) {
+            return write_weighted_fallback_ply_(fused_mesh_ply);
+        }
         return write_fallback_ply_(fused_mesh_ply);
     }
 
@@ -220,7 +272,10 @@ class FusionIntegrator {
     }
 
   private:
-    /// One fallback point with its colour already in RGB order.
+    /// One fallback point with its colour already in RGB order, the source
+    /// pixel, a hash of the c2w pose, and the confidence weight that produced
+    /// it. The pixel and pose identify repeated observations along the same
+    /// camera ray even when their depth values fall into different world bins.
     struct Point {
         float x{0.0F};
         float y{0.0F};
@@ -228,10 +283,38 @@ class FusionIntegrator {
         std::uint8_t r{255};
         std::uint8_t g{255};
         std::uint8_t b{255};
+        float weight{1.0F};
+        int pixel_u{0};
+        int pixel_v{0};
+        std::uint64_t pose_hash{0};
+    };
+
+    /// Weighted sum for one fallback spatial bin.
+    struct WeightedAccumulator {
+        double weight{0.0};
+        double x{0.0};
+        double y{0.0};
+        double z{0.0};
+        double r{0.0};
+        double g{0.0};
+        double b{0.0};
     };
 
     static bool pose_is_finite(const std::array<float, 12> &pose) noexcept {
         return std::ranges::all_of(pose, [](float v) { return std::isfinite(v); });
+    }
+
+    /// Stable FNV-1a hash over the exact c2w pose bits. Two frames with the
+    /// same pose share a hash, which lets extraction average repeated
+    /// observations of the same camera ray before world-space binning.
+    [[nodiscard]] static std::uint64_t hash_pose_(const std::array<float, 12> &pose) noexcept {
+        std::uint64_t hash = 1469598103934665603ULL;
+        for (const float value : pose) {
+            const auto bits = static_cast<std::uint64_t>(std::bit_cast<std::uint32_t>(value));
+            hash ^= bits;
+            hash *= 1099511628211ULL;
+        }
+        return hash;
     }
 
     void sanitize_options_() {
@@ -290,19 +373,67 @@ class FusionIntegrator {
         return bgr;
     }
 
+    /// Per-sample weight: 1.0 without a confidence map, else clamped confidence.
+    /// Returns false when the sample must be skipped (non-finite or zero weight).
+    [[nodiscard]] static bool sample_weight_(const float *conf_row, int u, float &weight) {
+        weight = 1.0F;
+        if (conf_row == nullptr) {
+            return true;
+        }
+        const float c = conf_row[u];
+        if (!std::isfinite(c)) {
+            return false;
+        }
+        weight = std::clamp(c, 0.0F, 1.0F);
+        return weight > 0.0F;
+    }
+
+    /// Back-project one pixel with the c2w pose and fill a fallback point.
+    /// Returns false when the world point is not finite.
+    [[nodiscard]] static bool make_fallback_point_(const std::array<float, 12> &pose_c2w, const Pinhole &k, int u,
+                                                   int v, float z, const cv::Mat &color, float weight,
+                                                   std::uint64_t pose_hash, Point &point) {
+        const float cam_x = (static_cast<float>(u) - k.cx) * z / k.fx;
+        const float cam_y = (static_cast<float>(v) - k.cy) * z / k.fy;
+        point.x = pose_c2w[0] * cam_x + pose_c2w[1] * cam_y + pose_c2w[2] * z + pose_c2w[3];
+        point.y = pose_c2w[4] * cam_x + pose_c2w[5] * cam_y + pose_c2w[6] * z + pose_c2w[7];
+        point.z = pose_c2w[8] * cam_x + pose_c2w[9] * cam_y + pose_c2w[10] * z + pose_c2w[11];
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {
+            return false;
+        }
+        if (!color.empty()) {
+            const cv::Vec3b &bgr = color.at<cv::Vec3b>(v, u);
+            point.b = bgr[0];
+            point.g = bgr[1];
+            point.r = bgr[2];
+        }
+        point.weight = weight;
+        point.pixel_u = u;
+        point.pixel_v = v;
+        point.pose_hash = pose_hash;
+        return true;
+    }
+
     /// Back-project valid depth pixels with the c2w pose and accumulate them.
+    ///
+    /// With confidence weighting enabled and a non-empty map, each sample is
+    /// stored with `w = clamp(conf, 0, 1)`; non-finite and zero-weight samples
+    /// are skipped so they cannot dominate the weighted mean computed during
+    /// extraction.
     bool accumulate_fallback_(const cv::Mat &depth, const cv::Mat &color_bgr, const std::array<float, 12> &pose_c2w,
-                              const Pinhole &k) {
+                              const Pinhole &k, const cv::Mat &confidence) {
         const cv::Mat color = prepare_color_(color_bgr, depth.rows, depth.cols);
         const int step = options_.stride > 0 ? options_.stride : 1;
         const float max_depth = options_.max_depth_m > 0.0F ? options_.max_depth_m : std::numeric_limits<float>::max();
-        const float fx = k.fx;
-        const float fy = k.fy;
-        const float cx = k.cx;
-        const float cy = k.cy;
+        const bool weight_samples = options_.conf_weighting && !confidence.empty();
+        if (weight_samples) {
+            confidence_weighting_active_ = true;
+        }
+        const std::uint64_t pose_hash = hash_pose_(pose_c2w);
 
         for (int v = 0; v < depth.rows; v += step) {
             const float *depth_row = depth.ptr<float>(v);
+            const float *conf_row = weight_samples ? confidence.ptr<float>(v) : nullptr;
             for (int u = 0; u < depth.cols; u += step) {
                 const float z = depth_row[u];
                 if (!(z > 0.0F) || !std::isfinite(z) || z > max_depth) {
@@ -311,23 +442,13 @@ class FusionIntegrator {
                 if (options_.max_points > 0 && points_.size() >= options_.max_points) {
                     return true;
                 }
-
-                const float cam_x = (static_cast<float>(u) - cx) * z / fx;
-                const float cam_y = (static_cast<float>(v) - cy) * z / fy;
-
-                Point point;
-                point.x = pose_c2w[0] * cam_x + pose_c2w[1] * cam_y + pose_c2w[2] * z + pose_c2w[3];
-                point.y = pose_c2w[4] * cam_x + pose_c2w[5] * cam_y + pose_c2w[6] * z + pose_c2w[7];
-                point.z = pose_c2w[8] * cam_x + pose_c2w[9] * cam_y + pose_c2w[10] * z + pose_c2w[11];
-                if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {
+                float weight = 1.0F;
+                if (!sample_weight_(conf_row, u, weight)) {
                     continue;
                 }
-
-                if (!color.empty()) {
-                    const cv::Vec3b &bgr = color.at<cv::Vec3b>(v, u);
-                    point.b = bgr[0];
-                    point.g = bgr[1];
-                    point.r = bgr[2];
+                Point point;
+                if (!make_fallback_point_(pose_c2w, k, u, v, z, color, weight, pose_hash, point)) {
+                    continue;
                 }
                 points_.push_back(point);
             }
@@ -335,7 +456,9 @@ class FusionIntegrator {
         return true;
     }
 
-    /// ASCII PLY writer used by the fallback (and by builds without Open3D).
+    /// ASCII PLY writer used when no confidence map was supplied. This keeps
+    /// the original one-point-per-observation output byte-compatible with
+    /// earlier fallback runs.
     [[nodiscard]] bool write_fallback_ply_(const std::filesystem::path &path) const {
         if (!ensure_parent_directories_(path)) {
             return false;
@@ -359,6 +482,109 @@ class FusionIntegrator {
         for (const Point &p : points_) {
             out << p.x << ' ' << p.y << ' ' << p.z << ' ' << static_cast<int>(p.r) << ' ' << static_cast<int>(p.g)
                 << ' ' << static_cast<int>(p.b) << '\n';
+        }
+        return static_cast<bool>(out);
+    }
+
+    /// Convert a weighted colour channel to a PLY byte.
+    [[nodiscard]] static std::uint8_t weighted_byte_(double value) noexcept {
+        if (!std::isfinite(value)) {
+            return 0;
+        }
+        const double clamped = std::clamp(value, 0.0, 255.0);
+        return static_cast<std::uint8_t>(std::lround(clamped));
+    }
+
+    /// ASCII PLY writer for confidence-weighted fallback output.
+    ///
+    /// Extraction normalises in two steps. First, observations that share a
+    /// camera ray (same c2w pose and pixel) are averaged with
+    /// `sum(p_i * w_i) / sum(w_i)`, so a repeated depth reading from the same
+    /// viewpoint follows the confident observation. The ray means are then
+    /// binned in world space at `Options::voxel_length` and the weighted mean
+    /// is written per bin. Low-confidence observations therefore move a result
+    /// only as far as their weight allows instead of outvoting the confident
+    /// surface.
+    [[nodiscard]] bool write_weighted_fallback_ply_(const std::filesystem::path &path) const {
+        if (!ensure_parent_directories_(path)) {
+            return false;
+        }
+
+        // Pass 1: weighted mean per (pose, pixel) camera ray.
+        std::map<std::array<std::uint64_t, 3>, WeightedAccumulator> rays;
+        for (const Point &p : points_) {
+            if (!(p.weight > 0.0F) || !std::isfinite(p.weight)) {
+                continue;
+            }
+            const auto key = std::array<std::uint64_t, 3>{p.pose_hash, static_cast<std::uint64_t>(p.pixel_u),
+                                                          static_cast<std::uint64_t>(p.pixel_v)};
+            WeightedAccumulator &acc = rays[key];
+            const double w = static_cast<double>(p.weight);
+            acc.weight += w;
+            acc.x += static_cast<double>(p.x) * w;
+            acc.y += static_cast<double>(p.y) * w;
+            acc.z += static_cast<double>(p.z) * w;
+            acc.r += static_cast<double>(p.r) * w;
+            acc.g += static_cast<double>(p.g) * w;
+            acc.b += static_cast<double>(p.b) * w;
+        }
+
+        // Pass 2: world-space bins of the ray means. The weighted sums carry
+        // through unchanged, so the final division still yields a weighted
+        // mean of every observation.
+        const float voxel = options_.voxel_length > 0.0F ? options_.voxel_length : 0.01F;
+        const double inv_voxel = 1.0 / static_cast<double>(voxel);
+        std::map<std::array<std::int64_t, 3>, WeightedAccumulator> bins;
+        for (const auto &entry : rays) {
+            const WeightedAccumulator &ray = entry.second;
+            if (!(ray.weight > 0.0)) {
+                continue;
+            }
+            const double inv_ray_weight = 1.0 / ray.weight;
+            const auto key =
+                std::array<std::int64_t, 3>{static_cast<std::int64_t>(std::floor(ray.x * inv_ray_weight * inv_voxel)),
+                                            static_cast<std::int64_t>(std::floor(ray.y * inv_ray_weight * inv_voxel)),
+                                            static_cast<std::int64_t>(std::floor(ray.z * inv_ray_weight * inv_voxel))};
+            WeightedAccumulator &bin = bins[key];
+            bin.weight += ray.weight;
+            bin.x += ray.x;
+            bin.y += ray.y;
+            bin.z += ray.z;
+            bin.r += ray.r;
+            bin.g += ray.g;
+            bin.b += ray.b;
+        }
+
+        if (bins.empty()) {
+            return false;
+        }
+
+        std::ofstream out(path);
+        if (!out) {
+            return false;
+        }
+        out << "ply\n"
+            << "format ascii 1.0\n"
+            << "comment da3::fusion::FusionIntegrator confidence-weighted fallback point cloud\n"
+            << "element vertex " << bins.size() << "\n"
+            << "property float x\n"
+            << "property float y\n"
+            << "property float z\n"
+            << "property uchar red\n"
+            << "property uchar green\n"
+            << "property uchar blue\n"
+            << "end_header\n";
+        out << std::setprecision(9);
+        for (const auto &entry : bins) {
+            const WeightedAccumulator &acc = entry.second;
+            if (!(acc.weight > 0.0)) {
+                continue;
+            }
+            const double inv_weight = 1.0 / acc.weight;
+            out << acc.x * inv_weight << ' ' << acc.y * inv_weight << ' ' << acc.z * inv_weight << ' '
+                << static_cast<int>(weighted_byte_(acc.r * inv_weight)) << ' '
+                << static_cast<int>(weighted_byte_(acc.g * inv_weight)) << ' '
+                << static_cast<int>(weighted_byte_(acc.b * inv_weight)) << '\n';
         }
         return static_cast<bool>(out);
     }
@@ -494,6 +720,7 @@ class FusionIntegrator {
     Options options_{};
     std::vector<std::array<float, 12>> trajectory_;
     std::vector<Point> points_;
+    bool confidence_weighting_active_{false};
 };
 
 } // namespace da3::fusion

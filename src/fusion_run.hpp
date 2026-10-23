@@ -17,8 +17,15 @@
 // All dense preprocessing goes through the dependency-free helpers in
 // fusion_utils.hpp and the fixed order documented there:
 //
-//   scale_intrinsics -> mask_low_confidence -> compute_valid_mask
-//                    -> estimate_scale_median (mode b only)
+//   scale_intrinsics -> mask_low_confidence (only with --conf-thresh)
+//                    -> compute_valid_mask -> estimate_scale_median (mode b)
+//
+// Per-pixel confidence maps are optional. Modes b and c pass them through to
+// FusionIntegrator, which weights samples by `clamp(conf, 0, 1)` by default.
+// Mode a integrates external sensor depth, so it never consumes a DA3
+// confidence map and weighting is disabled automatically. An explicit binary
+// mask remains available through `--conf-thresh` for callers that want flying
+// pixels bounded before weighting.
 //
 // Integration is delegated to FusionIntegrator so this file stays independent
 // of the Open3D/fallback backend split. The only artifact owned by this runner
@@ -35,6 +42,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <opencv2/core.hpp>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -127,8 +135,9 @@ struct FusionRunSummary {
 
 namespace detail {
 
-/// Constants are shared by every mode so the A/B/C comparison does not drift
-/// on filtering thresholds.
+/// Default threshold for the opt-in binary confidence mask. Weighting is the
+/// default path; this constant is retained so `--conf-thresh 0.5` reproduces
+/// the historical mask cut when a caller explicitly asks for it.
 inline constexpr float kConfidenceThreshold = 0.5F;
 inline constexpr float kEdgeThresholdM = 0.05F; // Sobel gradient bound (metres)
 
@@ -208,17 +217,37 @@ struct PreparedFrame {
 }
 
 /// Run steps 1-4 for one frame in the documented order.
+///
+/// `confidence` is optional and must be at the source-depth resolution when
+/// present. `conf_threshold` is the opt-in binary mask value; when it is unset
+/// (the default) depth is left unchanged and confidence weighting happens
+/// inside FusionIntegrator. The clone is intentional: later stages zero invalid
+/// pixels and must not mutate the caller's `FrameData::depth`.
 [[nodiscard]] inline bool prepare_frame(const tasks::FrameData &frame, const cv::Mat &model_depth,
                                         bool have_model_depth, const cv::Mat &source_depth, FusionMode mode,
                                         const std::vector<cv::Mat> &reference_depth, std::size_t index,
-                                        PreparedFrame &out) {
+                                        PreparedFrame &out, const cv::Mat &confidence = cv::Mat(),
+                                        std::optional<float> conf_threshold = std::nullopt) {
     if (!scaled_calibration(frame, model_depth, have_model_depth, source_depth, out.intrinsics)) {
         return false;
     }
 
-    // Step 2: remove low-confidence depth. FrameData carries no confidence map
-    // today, so the (empty) map leaves the depth unchanged by design.
-    out.depth = mask_low_confidence(source_depth, cv::Mat(), kConfidenceThreshold);
+    // Step 2: optional binary low-confidence mask. Weighting is the default
+    // path, so an unset threshold leaves the depth untouched (the historical
+    // empty-map behaviour) and the confidence map reaches the integrator.
+    out.depth = source_depth.clone();
+    if (conf_threshold.has_value() && !confidence.empty() && confidence.rows == source_depth.rows &&
+        confidence.cols == source_depth.cols && confidence.channels() == 1) {
+        cv::Mat conf32;
+        if (confidence.type() == CV_32FC1) {
+            conf32 = confidence;
+        } else if (confidence.type() == CV_64FC1) {
+            confidence.convertTo(conf32, CV_32F);
+        }
+        if (!conf32.empty()) {
+            out.depth = mask_low_confidence(source_depth, conf32, *conf_threshold);
+        }
+    }
 
     // Step 3: reject non-positive and flying pixels.
     out.valid = compute_valid_mask(out.depth, kEdgeThresholdM);
@@ -247,13 +276,25 @@ struct PreparedFrame {
 ///                        it as the depth source; mode b uses it only as the
 ///                        `estimate_scale_median()` reference. Entries may be
 ///                        empty when a frame has no capture depth.
+/// @param confidence      Optional per-frame confidence maps aligned with
+///                        `frames` (typically `DepthResult::conf`). Only modes b
+///                        and c consume them; mode a integrates sensor depth and
+///                        disables weighting automatically. Empty entries fall
+///                        back to uniform weight for that frame.
+/// @param conf_threshold  Optional binary mask threshold. When set, depth below
+///                        the threshold is zeroed before integration; when
+///                        unset the runner relies on confidence weighting. This
+///                        preserves the historical `--conf-thresh` escape hatch
+///                        for bounding flying pixels.
 ///
 /// @throws std::runtime_error on an empty sequence, a pose/frame count
 ///         mismatch, or a malformed external pose row.
 [[nodiscard]] inline FusionRunSummary run_offline_fusion(const std::vector<tasks::FrameData> &frames,
                                                          const std::vector<std::array<float, 12>> &poses_override,
                                                          FusionMode mode, const std::filesystem::path &out_dir,
-                                                         const std::vector<cv::Mat> &reference_depth = {}) {
+                                                         const std::vector<cv::Mat> &reference_depth = {},
+                                                         const std::vector<cv::Mat> &confidence = {},
+                                                         std::optional<float> conf_threshold = std::nullopt) {
     if (frames.empty()) {
         throw std::runtime_error("Fusion requires at least one frame");
     }
@@ -265,12 +306,16 @@ struct PreparedFrame {
 
     FusionIntegrator::Options options;
     options.stride = 1;
+    // Sensor depth in mode a has no matching DA3 confidence map; disable
+    // weighting so mode a stays byte-compatible with the earlier fallback.
+    options.conf_weighting = mode != FusionMode::a;
     FusionIntegrator integrator(options);
 
     FusionRunSummary summary;
     summary.mesh_path = out_dir / "fused_mesh.ply";
     double scale_sum = 0.0;
     std::size_t scale_samples = 0;
+    const cv::Mat no_confidence;
 
     for (std::size_t i = 0; i < frames.size(); ++i) {
         ++summary.frames_attempted;
@@ -290,9 +335,19 @@ struct PreparedFrame {
         }
         const cv::Mat &source_depth = *source;
 
+        // Confidence is only meaningful for DA3 depth. Mode a deliberately
+        // ignores it, and a stale/mismatched map is dropped rather than
+        // refusing an otherwise valid frame.
+        const cv::Mat *found_confidence = nullptr;
+        if (mode != FusionMode::a && i < confidence.size() && !confidence[i].empty() &&
+            confidence[i].rows == source_depth.rows && confidence[i].cols == source_depth.cols) {
+            found_confidence = &confidence[i];
+        }
+        const cv::Mat &frame_confidence = found_confidence != nullptr ? *found_confidence : no_confidence;
+
         detail::PreparedFrame prepared;
         if (!detail::prepare_frame(frame, model_depth, have_model_depth, source_depth, mode, reference_depth, i,
-                                   prepared)) {
+                                   prepared, frame_confidence, conf_threshold)) {
             ++summary.frames_skipped;
             continue;
         }
@@ -310,7 +365,7 @@ struct PreparedFrame {
 
         const std::array<float, 12> pose = uses_external_poses(mode) ? poses_override[i] : frame.pose;
 
-        if (!integrator.integrate(prepared.depth, frame.image_bgr, pose, prepared.intrinsics)) {
+        if (!integrator.integrate(prepared.depth, frame.image_bgr, pose, prepared.intrinsics, frame_confidence)) {
             ++summary.frames_skipped;
             continue;
         }
@@ -326,17 +381,22 @@ struct PreparedFrame {
 [[nodiscard]] inline FusionRunSummary run_offline_fusion(const std::vector<tasks::FrameData> &frames,
                                                          const std::vector<std::array<float, 12>> &poses_override,
                                                          const std::string &mode, const std::filesystem::path &out_dir,
-                                                         const std::vector<cv::Mat> &reference_depth = {}) {
-    return run_offline_fusion(frames, poses_override, parse_fusion_mode(mode), out_dir, reference_depth);
+                                                         const std::vector<cv::Mat> &reference_depth = {},
+                                                         const std::vector<cv::Mat> &confidence = {},
+                                                         std::optional<float> conf_threshold = std::nullopt) {
+    return run_offline_fusion(frames, poses_override, parse_fusion_mode(mode), out_dir, reference_depth, confidence,
+                              conf_threshold);
 }
 
 /// Character overload so `'a'`/`'b'`/`'c'` work at call sites.
 [[nodiscard]] inline FusionRunSummary run_offline_fusion(const std::vector<tasks::FrameData> &frames,
                                                          const std::vector<std::array<float, 12>> &poses_override,
                                                          char mode, const std::filesystem::path &out_dir,
-                                                         const std::vector<cv::Mat> &reference_depth = {}) {
-    return run_offline_fusion(frames, poses_override, parse_fusion_mode(std::string(1, mode)), out_dir,
-                              reference_depth);
+                                                         const std::vector<cv::Mat> &reference_depth = {},
+                                                         const std::vector<cv::Mat> &confidence = {},
+                                                         std::optional<float> conf_threshold = std::nullopt) {
+    return run_offline_fusion(frames, poses_override, parse_fusion_mode(std::string(1, mode)), out_dir, reference_depth,
+                              confidence, conf_threshold);
 }
 
 } // namespace da3::fusion

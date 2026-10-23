@@ -160,6 +160,11 @@ struct Options {
     // existing non-fused output path byte-for-byte unchanged.
     std::optional<da3::fusion::FusionMode> fusion_mode;
     std::filesystem::path fusion_out; // empty -> <output-dir>
+    // --conf-thresh T: opt-in binary low-confidence mask for fusion
+    // preprocessing. Unset (the default) keeps per-sample confidence weighting
+    // and reproduces the historical no-mask behaviour when no confidence map
+    // is available.
+    std::optional<float> conf_thresh;
 
     /// True when `focal` came from either the CLI (`--focal`) or RealSense
     /// intrinsics, rather than falling back to 1.2*W.
@@ -198,6 +203,7 @@ static void print_usage(std::ostream &os, const char *program) {
     os << "  --already-metric  Depth is already in meters; skip focal*net/300 scaling\n";
     os << "  --use-ray-pose    Use ray-based pose estimation for the pose task\n";
     os << "  --conf            Also save the confidence map as output_conf.jpg\n";
+    os << "                    (fusion modes b/c use it for confidence weighting)\n";
     os << "  --no-upscale      Keep depth map at model output resolution (no resize)\n";
     os << "  --process-res N   Resize the longest side to N before inference (default: 504)\n";
     os << "  --dump-raw PATH   Write the raw float32 depth map to PATH as a .npy file\n";
@@ -230,6 +236,8 @@ static void print_usage(std::ostream &os, const char *program) {
     os << "                    intrinsics.txt and output_cloud.ply stay with\n";
     os << "                    their ordinary task outputs.\n";
     os << "  --fusion-out DIR  Directory for fused_mesh.ply (default: <output-dir>)\n";
+    os << "  --conf-thresh T   Fusion: zero depth below confidence T in [0,1]\n";
+    os << "                    (binary mask). Unset keeps confidence weighting.\n";
     os << "  --help            Show this help and exit\n";
     os << "\n";
     os << "Tasks, outputs and recommended checkpoints:\n";
@@ -340,7 +348,7 @@ static void fill_frame_data(const DepthAnything3Inference &inference, DepthResul
 // bounded by the chunk (streaming pattern for long sequences).
 static void process_chunk(DepthAnything3Inference &inference, const std::vector<std::filesystem::path> &chunk,
                           const Options &opts, int trace_h, int trace_w, size_t base_index,
-                          std::vector<FrameData> *accumulate) {
+                          std::vector<FrameData> *accumulate, std::vector<cv::Mat> *confidence) {
     std::vector<std::vector<float>> tensors;
     std::vector<int> orig_h(chunk.size());
     std::vector<int> orig_w(chunk.size());
@@ -394,6 +402,9 @@ static void process_chunk(DepthAnything3Inference &inference, const std::vector<
             FrameData frame;
             fill_frame_data(inference, result, chunk[i], opts, i, &frame);
             accumulate->push_back(std::move(frame));
+            if (confidence != nullptr) {
+                confidence->push_back(result.conf);
+            }
         }
     }
 }
@@ -405,7 +416,8 @@ static void process_chunk(DepthAnything3Inference &inference, const std::vector<
 static void process_frame(DepthAnything3Inference &inference, const std::filesystem::path &image_path,
                           const Options &opts, const std::filesystem::path &depth_out,
                           const std::filesystem::path &raw_out, const std::filesystem::path &metric_out,
-                          const std::filesystem::path &conf_out, FrameData *frame_out) {
+                          const std::filesystem::path &conf_out, FrameData *frame_out,
+                          std::vector<cv::Mat> *confidence) {
     int orig_h = 0;
     int orig_w = 0;
     int out_h = 0;
@@ -429,6 +441,9 @@ static void process_frame(DepthAnything3Inference &inference, const std::filesys
     std::cout << "Timing: infer " << infer_ms << " ms (H2D + GPU + D2H)" << std::endl;
     write_frame_files(result, opts, depth_out, raw_out, metric_out, conf_out);
     fill_frame_data(inference, result, image_path, opts, 0, frame_out);
+    if (frame_out != nullptr && confidence != nullptr) {
+        confidence->push_back(result.conf);
+    }
 }
 
 // Locate an external capture depth directory. The RealSense capture layout
@@ -584,7 +599,7 @@ static std::vector<cv::Mat> resolve_fusion_reference_depth(da3::fusion::FusionMo
 // been written. The runner owns only <fusion-out>/fused_mesh.ply; poses.txt,
 // intrinsics.txt and output_cloud.ply remain owned by their task passes.
 static void run_requested_fusion(const Options &opts, const std::vector<FrameData> &frames,
-                                 const std::filesystem::path &input) {
+                                 const std::filesystem::path &input, const std::vector<cv::Mat> &confidence) {
     if (!opts.fusion_mode.has_value()) {
         return;
     }
@@ -604,8 +619,8 @@ static void run_requested_fusion(const Options &opts, const std::vector<FrameDat
         fusion_dir = ".";
     }
 
-    const da3::fusion::FusionRunSummary summary =
-        da3::fusion::run_offline_fusion(frames, external_poses, mode, fusion_dir, reference_depth);
+    const da3::fusion::FusionRunSummary summary = da3::fusion::run_offline_fusion(
+        frames, external_poses, mode, fusion_dir, reference_depth, confidence, opts.conf_thresh);
     std::cout << "Fusion mode '" << da3::fusion::fusion_mode_name(mode) << "': integrated " << summary.frames_integrated
               << "/" << summary.frames_attempted << " frame(s), mean depth scale " << summary.mean_depth_scale
               << std::endl;
@@ -726,6 +741,17 @@ int main(int argc, const char *argv[]) {
             opts.use_ray_pose = true;
         } else if (arg == "--conf") {
             opts.output_conf = true;
+        } else if (arg == "--conf-thresh" && i + 1 < args.size()) {
+            try {
+                const float threshold = std::stof(args[++i]);
+                if (!std::isfinite(threshold) || threshold < 0.0F || threshold > 1.0F) {
+                    throw std::invalid_argument("confidence threshold must be within [0, 1]");
+                }
+                opts.conf_thresh = threshold;
+            } catch (const std::exception &e) {
+                std::cerr << "Invalid value for --conf-thresh: " << e.what() << std::endl;
+                return 1;
+            }
         } else if (arg == "--no-upscale") {
             opts.upscale_to_orig = false;
         } else if (arg == "--dump-raw" && i + 1 < args.size()) {
@@ -937,7 +963,15 @@ int main(int argc, const char *argv[]) {
 
         Config config;
         config.process_res = opts.process_res;
-        config.output_conf = opts.output_conf;
+        // Request the confidence output for fusion when the model is expected to
+        // expose it. Pose/reconstruction exports can put a non-confidence head in
+        // output 1, so those tasks only extract it when the user passes --conf or
+        // --conf-thresh explicitly.
+        const bool fusion_confidence_expected =
+            opts.fusion_mode.has_value() &&
+            (*opts.fusion_mode == da3::fusion::FusionMode::b || *opts.fusion_mode == da3::fusion::FusionMode::c) &&
+            (opts.task == TaskType::mono || opts.task == TaskType::metric || opts.task == TaskType::multiview);
+        config.output_conf = opts.output_conf || opts.conf_thresh.has_value() || fusion_confidence_expected;
 
         const auto t_init_start = std::chrono::steady_clock::now();
         DepthAnything3Inference inference(model_path, config);
@@ -951,6 +985,10 @@ int main(int argc, const char *argv[]) {
         const bool accumulate_frames = opts.task == TaskType::pose || opts.task == TaskType::reconstruction ||
                                        opts.task == TaskType::gaussian || opts.fusion_mode.has_value();
         std::vector<FrameData> frames;
+        // Per-frame DepthResult::conf captured alongside the accumulated frames.
+        // The fusion runner consumes this for modes b/c; mode a ignores it.
+        std::vector<cv::Mat> fusion_confidence;
+        std::vector<cv::Mat> *confidence_accumulate = opts.fusion_mode.has_value() ? &fusion_confidence : nullptr;
 
         // Batch-model detection: static [N,3,H,W] input (dynamo any-view
         // exports). Dynamic mono graphs report [1,3,0,0].
@@ -998,7 +1036,7 @@ int main(int argc, const char *argv[]) {
                     const auto chunk_begin = inputs.begin() + static_cast<ptrdiff_t>(base);
                     const auto chunk_end = inputs.begin() + static_cast<ptrdiff_t>(base + static_cast<size_t>(trace_n));
                     std::vector<std::filesystem::path> chunk(chunk_begin, chunk_end);
-                    process_chunk(inference, chunk, opts, trace_h, trace_w, base, accumulate);
+                    process_chunk(inference, chunk, opts, trace_h, trace_w, base, accumulate, confidence_accumulate);
                 }
             }
 
@@ -1030,7 +1068,8 @@ int main(int argc, const char *argv[]) {
                         frames.emplace_back();
                         frame_out = &frames.back();
                     }
-                    process_frame(inference, inputs[i], opts, depth_out, raw_out, metric_out, conf_out, frame_out);
+                    process_frame(inference, inputs[i], opts, depth_out, raw_out, metric_out, conf_out, frame_out,
+                                  confidence_accumulate);
                 }
             } // !is_batch_model
         } else {
@@ -1051,11 +1090,12 @@ int main(int argc, const char *argv[]) {
                 frame_out = &frames.back();
             }
             process_frame(inference, input, opts, join_output(opts.output_dir, "output_depth.jpg"), opts.dump_raw,
-                          metric_out, join_output(opts.output_dir, "output_conf.jpg"), frame_out);
+                          metric_out, join_output(opts.output_dir, "output_conf.jpg"), frame_out,
+                          confidence_accumulate);
         }
 
         write_task_outputs(opts, frames);
-        run_requested_fusion(opts, frames, input);
+        run_requested_fusion(opts, frames, input, fusion_confidence);
         if (!video_tmp.empty()) {
             std::error_code ec;
             std::filesystem::remove_all(video_tmp, ec); // best-effort temp cleanup

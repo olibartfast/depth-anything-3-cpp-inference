@@ -89,7 +89,7 @@ jobs:
   sanitizers:
     name: Sanitizers (ASan + UBSan)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
 
@@ -165,13 +165,16 @@ jobs:
   cppcheck:
     name: Cppcheck
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
+      # cppcheck only parses the sources; it needs neither the compiler,
+      # CMake/Ninja, nor OpenCV, so skip that install surface entirely.
       - uses: ./.github/actions/setup-deps
         with:
           lint-tools: "true"
+          build-tools: "false"
 
       - name: Run cppcheck
         run: ./scripts/ci/run-cppcheck.sh
@@ -188,7 +191,7 @@ jobs:
   coverage:
     name: Coverage (gcov)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
         with:
@@ -242,7 +245,7 @@ jobs:
   benchmark:
     name: Benchmark regression
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     permissions:
       contents: write
     steps:

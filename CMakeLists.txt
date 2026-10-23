@@ -455,6 +455,7 @@ set(TEST_FIXTURE_DIR "${TEST_DIR}/fixtures")
 add_executable(unit_tests
     "${TEST_DIR}/unit/test_camera_capture.cpp"
     "${TEST_DIR}/unit/test_depth_anything3_inference.cpp"
+    "${TEST_DIR}/unit/test_fusion_pose.cpp"
     "${TEST_DIR}/unit/test_onnx_backend.cpp"
 )
 target_compile_options(unit_tests PRIVATE ${PROJECT_WARNING_FLAGS})

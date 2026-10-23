@@ -89,14 +89,24 @@ The helper order is fixed and shared by all modes:
 1. **`scale_intrinsics`** — rescale `fx, fy, cx, cy` from the calibration
    resolution to the depth-map resolution *before* any pixel is interpreted.
 2. **`mask_low_confidence`** — zero depth below the confidence threshold
-   (`0.5`); `FrameData` has no confidence map today, so the empty map leaves
-   depth unchanged by design.
+   (default `--conf-thresh 0.5`; pass `0` to keep every sample and rely on
+   weighting alone). Modes `b`/`c` supply the model's confidence map, mode `a`
+   has no model confidence and leaves depth unchanged.
 3. **`compute_valid_mask`** — build the 0/255 mask from the masked depth,
    removing non-positive pixels and Sobel-gradient "flying pixels" above the
    edge threshold (`0.05 m`).
 4. **`estimate_scale_median`** — mode `b` only: median of `ref / pred` over
    valid pixels, multiplied into the depth before integration. Returns `1.0`
    when no pixel qualifies.
+
+Confidence also weights integration. The dependency-free fallback stores each
+sample with `w = clamp(conf, 0, 1)` and writes the weighted mean per camera ray
+and world bin; a deterministic check with two observations of the same pixel
+gives `z = 1.9 m` when the 2 m sample has confidence 0.9 and `z = 1.1 m` when
+the 1 m sample does. Open3D's pinned tensor SLAM `Frame`/`Model` API exposes no
+per-sample confidence or weight tensor, so weighting applies to the fallback
+only; the Open3D TSDF backend integrates every valid sample with uniform
+weight.
 
 Invalid-mask pixels are zeroed again immediately before integration so edge
 artefacts do not become surface points.

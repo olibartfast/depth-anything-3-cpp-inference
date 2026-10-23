@@ -10,22 +10,62 @@ inputs:
     description: Install clang-format, clang-tidy, and cppcheck
     required: false
     default: "false"
+  build-tools:
+    description: >-
+      Install the CMake/Ninja/ccache/compiler/OpenCV toolchain. Set to false
+      for jobs that only run lint tools (for example cppcheck).
+    required: false
+    default: "true"
 
 runs:
   using: composite
   steps:
     - name: Install dependencies
       shell: bash
+      env:
+        DEBIAN_FRONTEND: noninteractive
       run: |
         set -euo pipefail
-        packages=(cmake ninja-build ccache libopencv-dev clang-18)
+
+        # Retry transient mirror failures, but abandon a stalled connection
+        # quickly instead of blocking the runner for minutes per package.
+        apt_opts=(
+          -o Acquire::Retries=3
+          -o Acquire::http::Timeout=30
+          -o Acquire::https::Timeout=30
+        )
+
+        # The apt phase used to be able to consume the whole job timeout when a
+        # mirror stalled. Give update+install a shared wall-clock budget so a
+        # broken mirror fails fast instead.
+        apt_deadline=$(( SECONDS + 12 * 60 ))
+        apt() {
+          local remaining=$(( apt_deadline - SECONDS ))
+          if (( remaining <= 0 )); then
+            echo "::error::apt phase exceeded its 12 minute budget" >&2
+            exit 124
+          fi
+          sudo timeout --signal=TERM --kill-after=20 "$remaining" \
+            apt-get "${apt_opts[@]}" "$@"
+        }
+
+        packages=()
+        if [ "${{ inputs.build-tools }}" = "true" ]; then
+          # Keep libopencv-dev: Ubuntu ships OpenCVConfig.cmake only in that
+          # package, so the per-component -dev packages alone would break
+          # find_package(OpenCV COMPONENTS ...). The package set is therefore
+          # unchanged rather than widened or narrowed at the OpenCV level.
+          packages+=(cmake ninja-build ccache libopencv-dev clang-18)
+        fi
         if [ "${{ inputs.lint-tools }}" = "true" ]; then
           packages+=(clang-format-18 clang-tidy-18 cppcheck)
         fi
-        sudo apt-get update
-        sudo apt-get install -y "${packages[@]}"
+
+        apt update
+        apt install -y "${packages[@]}"
 
     - name: Set up ccache
+      if: ${{ inputs.build-tools == 'true' }}
       uses: hendrikmuhs/ccache-action@v1
       with:
         key: ${{ inputs.ccache-key }}

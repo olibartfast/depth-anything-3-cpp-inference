@@ -68,11 +68,14 @@ runs:
 
         packages=()
         if [ "${{ inputs.build-tools }}" = "true" ]; then
-          # Keep libopencv-dev: Ubuntu ships OpenCVConfig.cmake only in that
-          # package, so the per-component -dev packages alone would break
-          # find_package(OpenCV COMPONENTS ...). The package set is therefore
-          # unchanged rather than widened or narrowed at the OpenCV level.
-          packages+=(cmake ninja-build ccache libopencv-dev clang-18)
+          # Component -dev packages only. The libopencv-dev metapackage pulls
+          # libopencv-viz -> VTK -> OpenMPI -> AMD HIP, which this project does
+          # not use and which dominates install time on a slow archive mirror.
+          # cmake/FindOpenCV.cmake resolves the components without a config
+          # file (Ubuntu ships OpenCVConfig.cmake only in libopencv-dev).
+          packages+=(cmake ninja-build ccache clang-18
+            libopencv-core-dev libopencv-imgproc-dev libopencv-imgcodecs-dev
+            libopencv-highgui-dev libopencv-videoio-dev)
         fi
         if [ "${{ inputs.lint-tools }}" = "true" ]; then
           packages+=(clang-format-18 clang-tidy-18 cppcheck)

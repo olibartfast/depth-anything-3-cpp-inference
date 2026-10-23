@@ -157,6 +157,9 @@ Other useful upstream links:
 ```bash
 sudo apt-get update
 sudo apt-get install -y cmake libopencv-dev
+# Component-only alternative (avoids the VTK/HIP chain that libopencv-dev pulls):
+# sudo apt-get install -y libopencv-core-dev libopencv-imgproc-dev \
+#   libopencv-imgcodecs-dev libopencv-highgui-dev libopencv-videoio-dev
 
 # Compiler — any C++20-capable version:
 sudo apt-get install -y clang-18

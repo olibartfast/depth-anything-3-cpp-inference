@@ -241,6 +241,10 @@ if(USE_TENSORRT)
 endif()
 
 # --- Find OpenCV ---
+# Prefer the project's module so a component-only OpenCV install (without the
+# libopencv-dev metapackage and its VTK/HIP dependency chain) also works. The
+# module resolves the same OpenCV_INCLUDE_DIRS / OpenCV_LIBS variables.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui videoio)
 find_package(Threads REQUIRED)
 if(NOT OpenCV_FOUND)

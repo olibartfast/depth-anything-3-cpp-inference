@@ -10,7 +10,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     ninja-build \
     clang-18 \
-    libopencv-dev \
+    libopencv-core-dev \
+    libopencv-imgproc-dev \
+    libopencv-imgcodecs-dev \
+    libopencv-highgui-dev \
+    libopencv-videoio-dev \
     wget \
     ca-certificates \
     git \

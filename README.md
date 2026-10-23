@@ -600,7 +600,7 @@ GitHub Actions runs `.github/workflows/ci.yml` for pushes and pull requests targ
 | `Clang-Tidy` | `clang-analyzer-*` and `bugprone-*` findings fail; the full configured report is uploaded as an artifact |
 | `Cppcheck` | `warning`, `performance`, and `portability` findings fail |
 | `Coverage` | gcov line coverage floor on the tested library surface, plus diff coverage on changed lines |
-| `Benchmark regression` | Google Benchmark medians compared with the stored `benchmark-data` baseline; 150% of the stored median fails |
+| `Benchmark regression` | Google Benchmark medians compared with the tracked `benchmarks/data.json` baseline; 150% of the stored median fails |
 | `Docker build` | Builds the multi-stage image on Ubuntu 24.04 and smoke-tests `inference_app --help` |
 | `Quality Gate` | Aggregates the jobs above; required status check |
 
@@ -614,7 +614,7 @@ The coverage gate is calibrated to the model-free test surface. It enforces 80% 
 
 ### Benchmarks
 
-Benchmark data is stored on the `benchmark-data` branch by `github-action-benchmark`, as a plain data branch with no published site. Pushes to `master` update the baseline; pull requests compare against it and fail at 150% of the stored median. The threshold is deliberately loose because hosted runners are noisy; tighten it after collecting stable history.
+Benchmark data lives in the tracked file `benchmarks/data.json`; there is no data branch and nothing is pushed. Pull requests and `master` pushes compare against that file and fail at 150% of the stored median. Refresh it from the `benchmark-results` artifact when the baseline legitimately changes. The threshold is deliberately loose because hosted runners are noisy; tighten it after collecting stable history.
 
 ### Formatting and static analysis
 

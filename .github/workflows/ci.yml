@@ -247,7 +247,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v7
 
@@ -286,10 +286,12 @@ jobs:
           tool: customSmallerIsBetter
           output-file-path: build/benchmark-action.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          auto-push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-          # Baselines live on a data-only branch. GitHub Pages is not used.
-          gh-pages-branch: benchmark-data
-          benchmark-data-dir-path: benchmarks
+          # The baseline is a tracked file, not a data branch. There is no
+          # gh-pages branch and nothing is pushed: this step only compares and
+          # fails on a >150% regression. Refresh benchmarks/data.json manually
+          # from the benchmark-results artifact when the baseline changes.
+          external-data-json-path: benchmarks/data.json
+          auto-push: false
           alert-threshold: '150%'
           fail-on-alert: true
           comment-on-alert: false

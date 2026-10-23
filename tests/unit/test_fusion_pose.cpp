@@ -176,8 +176,8 @@ TEST(FusionPose, IcpRecoversPureTranslation) {
 
     const cv::Mat reference = render_depth(surface, intrinsics, reference_pose, kWidth, kHeight);
     const cv::Mat current = render_depth(surface, intrinsics, truth, kWidth, kHeight);
-    ASSERT_GT(cv::countNonZero(reference > 0.0F), kWidth * kHeight / 2);
-    ASSERT_GT(cv::countNonZero(current > 0.0F), kWidth * kHeight / 2);
+    ASSERT_GT(cv::countNonZero(reference > 0.0), kWidth * kHeight / 2);
+    ASSERT_GT(cv::countNonZero(current > 0.0), kWidth * kHeight / 2);
 
     da3::fusion::IcpPoseProvider provider({reference, current}, intrinsics, reference_pose);
     std::array<float, 12> seed{};
@@ -206,8 +206,8 @@ TEST(FusionPose, IcpRecoversSmallRotation) {
 
     const cv::Mat reference = render_depth(surface, intrinsics, reference_pose, kWidth, kHeight);
     const cv::Mat current = render_depth(surface, intrinsics, truth, kWidth, kHeight);
-    ASSERT_GT(cv::countNonZero(reference > 0.0F), kWidth * kHeight / 2);
-    ASSERT_GT(cv::countNonZero(current > 0.0F), kWidth * kHeight / 2);
+    ASSERT_GT(cv::countNonZero(reference > 0.0), kWidth * kHeight / 2);
+    ASSERT_GT(cv::countNonZero(current > 0.0), kWidth * kHeight / 2);
 
     da3::fusion::IcpPoseProvider provider({reference, current}, intrinsics, reference_pose);
     std::array<float, 12> seed{};
@@ -228,7 +228,7 @@ TEST(FusionPose, IcpIdentityConvergesToIdentity) {
 
     const std::array<float, 12> identity = identity_pose();
     const cv::Mat depth = render_depth(surface, intrinsics, identity, kWidth, kHeight);
-    ASSERT_GT(cv::countNonZero(depth > 0.0F), kWidth * kHeight / 2);
+    ASSERT_GT(cv::countNonZero(depth > 0.0), kWidth * kHeight / 2);
 
     da3::fusion::IcpPoseProvider provider({depth, depth}, intrinsics, identity);
     std::array<float, 12> seed{};
@@ -257,8 +257,8 @@ TEST(FusionPose, IcpComposesWithPreviousPose) {
 
     const cv::Mat reference = render_depth(surface, intrinsics, first_pose, kWidth, kHeight);
     const cv::Mat current = render_depth(surface, intrinsics, truth, kWidth, kHeight);
-    ASSERT_GT(cv::countNonZero(reference > 0.0F), kWidth * kHeight / 2);
-    ASSERT_GT(cv::countNonZero(current > 0.0F), kWidth * kHeight / 2);
+    ASSERT_GT(cv::countNonZero(reference > 0.0), kWidth * kHeight / 2);
+    ASSERT_GT(cv::countNonZero(current > 0.0), kWidth * kHeight / 2);
 
     da3::fusion::IcpPoseProvider provider({reference, current}, intrinsics, first_pose);
     std::array<float, 12> seed{};
@@ -280,7 +280,7 @@ TEST(FusionPose, IcpRejectsInvalidDepth) {
 
     const cv::Mat reference = render_depth(surface, intrinsics, identity, kWidth, kHeight);
     const cv::Mat invalid = cv::Mat::zeros(kHeight, kWidth, CV_32F);
-    ASSERT_GT(cv::countNonZero(reference > 0.0F), kWidth * kHeight / 2);
+    ASSERT_GT(cv::countNonZero(reference > 0.0), kWidth * kHeight / 2);
 
     da3::fusion::IcpPoseProvider provider({reference, invalid}, intrinsics, identity);
     std::array<float, 12> seed{};
@@ -304,7 +304,7 @@ TEST(FusionPose, IcpRejectsInconsistentOutlierScene) {
     // correspondence is a distance outlier, so the frame must be rejected
     // rather than sliding the wall into place.
     const cv::Mat outlier_wall(kHeight, kWidth, CV_32F, cv::Scalar(1.0));
-    ASSERT_GT(cv::countNonZero(reference > 0.0F), kWidth * kHeight / 2);
+    ASSERT_GT(cv::countNonZero(reference > 0.0), kWidth * kHeight / 2);
 
     da3::fusion::IcpPoseProvider provider({reference, outlier_wall}, intrinsics, identity);
     std::array<float, 12> seed{};

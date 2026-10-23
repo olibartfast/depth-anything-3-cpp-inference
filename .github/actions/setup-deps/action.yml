@@ -29,9 +29,12 @@ runs:
       uses: actions/cache@v4
       with:
         path: ~/apt-cache
-        key: apt-${{ runner.os }}-${{ hashFiles('.github/actions/setup-deps/action.yml') }}
+        # Stable key: package changes are rare, and apt refetches anything the
+        # cache lacks. Hashing the action file would throw the cache away on
+        # every workflow edit.
+        key: apt-v2-${{ runner.os }}
         restore-keys: |
-          apt-${{ runner.os }}-
+          apt-v2-
 
     - name: Install dependencies
       shell: bash
@@ -45,6 +48,11 @@ runs:
         # KeepDownloadedPackages plus a user-owned archive dir lets the cache
         # above turn repeat installs into local .deb installs.
         mkdir -p "$HOME/apt-cache/partial"
+        # apt downloads as the unprivileged _apt sandbox user, which cannot
+        # write a runner-owned directory unless it is world-writable. Without
+        # this the cache directory stays empty and actions/cache has nothing
+        # to save.
+        chmod 777 "$HOME/apt-cache" "$HOME/apt-cache/partial"
         apt_opts=(
           -o Acquire::Retries=3
           -o Acquire::http::Timeout=30
@@ -83,6 +91,14 @@ runs:
 
         apt update
         apt install -y "${packages[@]}"
+
+        # Belt and braces: some apt versions drop the debs in the system cache
+        # even with Dir::Cache::archives set. Copy whatever exists so the
+        # cache is never empty.
+        sudo find /var/cache/apt/archives -maxdepth 1 -name '*.deb' \
+          -exec cp -n {} "$HOME/apt-cache/" \; 2>/dev/null || true
+        ls "$HOME/apt-cache"/*.deb >/dev/null 2>&1 || \
+          echo "::warning::apt cache is empty; the next run will download again"
 
     - name: Set up ccache
       if: ${{ inputs.build-tools == 'true' }}

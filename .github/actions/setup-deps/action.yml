@@ -20,6 +20,19 @@ inputs:
 runs:
   using: composite
   steps:
+    # Debian packages are cached between runs so the slow archive mirror is hit
+    # only on a cache miss. The cache lives under the runner's home directory
+    # because /var/cache/apt/archives is root-owned and the cache action
+    # restores as the unprivileged runner user.
+    - name: Restore apt package cache
+      if: ${{ inputs.build-tools == 'true' || inputs.lint-tools == 'true' }}
+      uses: actions/cache@v4
+      with:
+        path: ~/apt-cache
+        key: apt-${{ runner.os }}-${{ hashFiles('.github/actions/setup-deps/action.yml') }}
+        restore-keys: |
+          apt-${{ runner.os }}-
+
     - name: Install dependencies
       shell: bash
       env:
@@ -29,20 +42,24 @@ runs:
 
         # Retry transient mirror failures, but abandon a stalled connection
         # quickly instead of blocking the runner for minutes per package.
+        # KeepDownloadedPackages plus a user-owned archive dir lets the cache
+        # above turn repeat installs into local .deb installs.
+        mkdir -p "$HOME/apt-cache/partial"
         apt_opts=(
           -o Acquire::Retries=3
           -o Acquire::http::Timeout=30
           -o Acquire::https::Timeout=30
+          -o APT::Keep-Downloaded-Packages=true
+          -o Dir::Cache::archives="$HOME/apt-cache"
         )
 
-        # The apt phase used to be able to consume the whole job timeout when a
-        # mirror stalled. Give update+install a shared wall-clock budget so a
-        # broken mirror fails fast instead.
-        apt_deadline=$(( SECONDS + 12 * 60 ))
+        # Give update+install a shared wall-clock budget so a broken mirror
+        # fails with a clear error instead of consuming the job timeout.
+        apt_deadline=$(( SECONDS + 20 * 60 ))
         apt() {
           local remaining=$(( apt_deadline - SECONDS ))
           if (( remaining <= 0 )); then
-            echo "::error::apt phase exceeded its 12 minute budget" >&2
+            echo "::error::apt phase exceeded its 20 minute budget" >&2
             exit 124
           fi
           sudo timeout --signal=TERM --kill-after=20 "$remaining" \
